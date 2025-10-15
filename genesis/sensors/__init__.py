@@ -6,3 +6,5 @@ from .raycaster import DepthCameraOptions as DepthCamera
 from .raycaster import RaycasterOptions as Lidar
 from .raycaster import RaycasterOptions as Raycaster
 from .sensor_manager import SensorManager
+from .tactile_field import TactileFieldSensorOptions as TactileField
+from .tactile_field import TactileFieldSensor
