@@ -70,15 +70,9 @@ def main():
     )
     gs.logger.info(f"Sensor pad added at z=0.1m, tilted {args.angle:.1f}° around X-axis")
 
-    # Create sphere mesh file for SDF
-    import trimesh
+    # Create indenter shape
     shape_size = args.size
     if args.shape == "sphere":
-        sphere_mesh = trimesh.creation.icosphere(subdivisions=3, radius=shape_size)
-        shape_mesh_path = "/tmp/sphere_indenter.obj"
-        sphere_mesh.export(shape_mesh_path)
-        gs.logger.info(f"Created sphere mesh for SDF: {shape_mesh_path}")
-
         shape = scene.add_entity(
             gs.morphs.Sphere(
                 radius=shape_size,
@@ -86,12 +80,8 @@ def main():
                 fixed=False,
             )
         )
+        gs.logger.info(f"Created sphere indenter (radius={shape_size}m)")
     elif args.shape == "cube":
-        cube_mesh = trimesh.creation.box(extents=(shape_size, shape_size, shape_size))
-        shape_mesh_path = "/tmp/cube_indenter.obj"
-        cube_mesh.export(shape_mesh_path)
-        gs.logger.info(f"Created cube mesh for SDF: {shape_mesh_path}")
-
         shape = scene.add_entity(
             gs.morphs.Box(
                 size=(shape_size, shape_size, shape_size),
@@ -99,6 +89,7 @@ def main():
                 fixed=False,
             )
         )
+        gs.logger.info(f"Created cube indenter (size={shape_size}m)")
     else:
         raise ValueError("Invalid shape choice")
     gs.logger.info(f"Object added at (0, 0, 0.2), will impact at {args.angle}° angle")
@@ -112,7 +103,6 @@ def main():
             link_idx_local=0,  # sensor_base will be link 0
             indenter_entity_idx=shape.idx,
             indenter_link_idx_local=0,  # Shape has only one link
-            indenter_mesh_path=shape_mesh_path,
             num_rows=15,
             num_cols=15,
             surface_size=(0.08, 0.08),
@@ -161,6 +151,9 @@ def main():
 
     for step in range(max_steps):
         scene.step()
+
+        if step == 13:
+            print('here')
 
         # Render camera frame if recording
         if cam is not None:
