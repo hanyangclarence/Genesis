@@ -22,7 +22,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("-v", "--vis", action="store_true", default=True, help="Show visualization GUI")
     parser.add_argument("-nv", "--no-vis", action="store_false", dest="vis", help="Disable visualization GUI")
-    parser.add_argument("-c", "--cpu", action="store_true", help="Use CPU instead of GPU")
     parser.add_argument("--shape", type=str, default="sphere", choices=["sphere", "cube"], help="Indenter shape")
     parser.add_argument("--size", type=float, default=0.03, help="Indenter size (radius for sphere, side length for cube)")
     parser.add_argument("--save-video", type=str, default="tactile_video.mp4", help="Path to save force field video")
@@ -31,7 +30,7 @@ def main():
     args = parser.parse_args()
 
     ########################## init ##########################
-    gs.init(backend=gs.cpu if args.cpu else gs.gpu, logging_level="info")
+    gs.init(backend=gs.gpu, logging_level="info")
 
     ########################## scene setup ##########################
     scene = gs.Scene(
@@ -133,17 +132,11 @@ def main():
     scene.build()
     gs.logger.info(f"✓ Scene built. Sensor pad idx: {sensor_pad.idx}, Shape idx: {shape.idx}")
 
-    ########################## simulation ##########################
-    gs.logger.info("\nStarting simulation...")
-    gs.logger.info(f"Shape will impact sensor at {args.angle}° angle")
-    gs.logger.info("Watch for colored shapes on sensor surface (force visualization)")
-
     # Start camera recording if camera was added
     if cam is not None:
         cam.start_recording()
         gs.logger.info("Camera recording started...")
 
-    contact_detected = False
     max_steps = 70
 
     # Storage for video frames (store full 3D force vectors)
@@ -164,57 +157,10 @@ def main():
 
         # Reshape to (num_rows, num_cols, 3) for analysis
         force_field_3d = force_field.reshape(15, 15, 3)
-        force_field_3d[..., :2] = 0.0  # Zero out tangential forces for visualization
+        # force_field_3d[..., :2] = 0.0  # Zero out tangential forces for visualization
 
         # Store full 3D force vectors for video
         force_field_frames.append(force_field_3d.cpu().numpy())
-
-        # Compute total force and max force
-        total_force = torch.norm(force_field_3d, dim=-1).sum().item()
-        max_force = torch.norm(force_field_3d, dim=-1).max().item()
-
-        # Debug shape and sensor positions
-        if step < 5 or (step % 50 == 0 and step < 150):
-            shape_pos = shape.get_pos()
-            sensor_pos = sensor_pad.get_pos()
-            gs.logger.info(f"[Step {step}] Shape: {shape_pos}, Sensor: {sensor_pos}, Force: {total_force:.2f} N")
-
-        # Print info when contact is detected
-        if total_force > 0.01 and not contact_detected:
-            contact_detected = True
-            gs.logger.info(f"\n[Step {step}] CONTACT DETECTED!")
-            gs.logger.info(f"  Total force: {total_force:.4f} N")
-            gs.logger.info(f"  Max force at single taxel: {max_force:.4f} N")
-
-            # Find location of max force
-            force_magnitudes = torch.norm(force_field_3d, dim=-1)
-            max_idx = torch.argmax(force_magnitudes)
-            max_row = max_idx // 15
-            max_col = max_idx % 15
-            gs.logger.info(f"  Max force location: row {max_row}, col {max_col}")
-
-            # Show force direction
-            max_force_vec = force_field_3d[max_row, max_col]
-            gs.logger.info(f"  Force vector at max: {max_force_vec.cpu().numpy()}")
-
-        # Print periodic updates during contact
-        if contact_detected and step % 50 == 0:
-            gs.logger.info(f"\n[Step {step}] Force field update:")
-            gs.logger.info(f"  Total force: {total_force:.4f} N")
-            gs.logger.info(f"  Max force: {max_force:.4f} N")
-
-            # Get shape position and velocity
-            shape_pos = shape.get_pos()
-            shape_vel = shape.get_vel()
-            gs.logger.info(f"  Shape position: {shape_pos}")
-            gs.logger.info(f"  Shape velocity: {shape_vel}")
-
-        # Stop if shape has settled
-        if contact_detected and step > 300:
-            shape_vel = shape.get_vel()
-            if torch.norm(shape_vel) < 0.001:
-                gs.logger.info(f"\n[Step {step}] Shape has settled. Stopping simulation.")
-                break
 
     # Stop camera recording if it was started
     if cam is not None:
@@ -226,35 +172,6 @@ def main():
     gs.logger.info("\n" + "="*60)
     gs.logger.info("SIMULATION COMPLETE")
     gs.logger.info("="*60)
-
-    if contact_detected:
-        force_field = sensor.read()
-        force_field_3d = force_field.reshape(15, 15, 3)
-        total_force = torch.norm(force_field_3d, dim=-1).sum().item()
-        max_force = torch.norm(force_field_3d, dim=-1).max().item()
-
-        gs.logger.info(f"Final total force: {total_force:.4f} N")
-        gs.logger.info(f"Final max force: {max_force:.4f} N")
-
-        # Print force distribution
-        force_magnitudes = torch.norm(force_field_3d, dim=-1)
-        gs.logger.info("\nForce magnitude heatmap (N):")
-        gs.logger.info("(Each cell shows force at that tactile point)")
-        print(force_magnitudes.cpu().numpy())
-
-        # Count active tactile points
-        active_points = (force_magnitudes > 0.01).sum().item()
-        gs.logger.info(f"\nActive tactile points: {active_points} / {15*15}")
-
-        # Analyze force direction (normal vs tangential)
-        force_z = force_field_3d[:, :, 2]  # Z component (approximately normal for untilted sensor)
-        force_xy = torch.norm(force_field_3d[:, :, :2], dim=-1)  # XY components (tangential)
-        gs.logger.info(f"\nForce components:")
-        gs.logger.info(f"  Normal force (Z): {force_z.sum().item():.2f} N")
-        gs.logger.info(f"  Tangential force (XY): {force_xy.sum().item():.2f} N")
-
-    else:
-        gs.logger.warning("No contact detected! Check setup.")
 
     gs.logger.info("\nVisualization:")
     gs.logger.info("- Colored spheres = tactile points (color = force magnitude)")
@@ -277,13 +194,11 @@ def main():
 
     # Find global max force magnitude for consistent scaling
     max_force_all = max([np.linalg.norm(frame, axis=-1).max() for frame in force_field_frames])
-    force_threshold = max_force_all * 0.01  # Only draw vectors > 1% of max
 
     # Scaling factor for arrow length
     arrow_scale = 0.005 / (max_force_all + 1e-6)  # Scale so max arrow is ~5mm
 
     gs.logger.info(f"Max force magnitude: {max_force_all:.2f} N")
-    gs.logger.info(f"Force threshold for drawing: {force_threshold:.4f} N")
     gs.logger.info(f"Arrow scale factor: {arrow_scale:.6f}")
 
     # Animation update function
@@ -303,24 +218,22 @@ def main():
                 fx, fy, fz = force_data[i, j]
                 force_mag = np.sqrt(fx**2 + fy**2 + fz**2)
 
-                # Only draw if force is significant
-                if force_mag > force_threshold:
-                    x_pos, y_pos = X[i, j], Y[i, j]
-                    z_pos = 0.0  # Base of sensor surface
+                x_pos, y_pos = X[i, j], Y[i, j]
+                z_pos = 0.0  # Base of sensor surface
 
-                    # Scale arrow length
-                    dx = fx * arrow_scale
-                    dy = fy * arrow_scale
-                    dz = fz * arrow_scale
+                # Scale arrow length
+                dx = fx * arrow_scale
+                dy = fy * arrow_scale
+                dz = fz * arrow_scale
 
-                    # Color based on magnitude (normalized)
-                    color_intensity = min(force_mag / max_force_all, 1.0)
-                    color = plt.cm.jet(color_intensity)
+                # Color based on magnitude (normalized)
+                color_intensity = min(force_mag / max_force_all, 1.0)
+                color = plt.cm.jet(color_intensity)
 
-                    # Draw arrow
-                    ax.quiver(x_pos, y_pos, z_pos, dx, dy, dz,
-                             color=color, arrow_length_ratio=0.3, linewidth=2)
-                    num_vectors_drawn += 1
+                # Draw arrow
+                ax.quiver(x_pos, y_pos, z_pos, dx, dy, dz,
+                            color=color, arrow_length_ratio=0.3, linewidth=2)
+                num_vectors_drawn += 1
 
         # Calculate total force and components
         total_force = np.linalg.norm(force_data, axis=-1).sum()

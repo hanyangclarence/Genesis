@@ -443,29 +443,25 @@ class TactileFieldSensor(
 
         Uses Genesis's precomputed SDF voxel grids with trilinear interpolation
         for fast penetration depth and normal queries.
+
+        Args:
+            tactile_points_world: (B, N, 3) - Tactile points in world frame
+
+        Returns:
+            forces: (B, N, 3) - Force vectors at each tactile point
         """
-        import time
-
-        # Track timing for each step
-        timings = {}
-        t_start = time.perf_counter()
-
         solver = shared_metadata.solver
-        n_points = tactile_points_world.shape[1]
-        forces = torch.zeros((n_envs, n_points, 3), dtype=gs.tc_float, device=gs.device)
+        n_points = tactile_points_world.shape[1]  # N
+        forces = torch.zeros((n_envs, n_points, 3), dtype=gs.tc_float, device=gs.device)  # (B, N, 3)
 
         # STEP 1: Check contacts
-        t1 = time.perf_counter()
         all_contacts = solver.collider.get_contacts(as_tensor=True, to_torch=True)
-        timings['1_get_contacts'] = time.perf_counter() - t1
+        mean_force = all_contacts["force"][..., 2].mean()  # take z axis
 
         if all_contacts["link_a"].numel() == 0:
-            timings['total'] = time.perf_counter() - t_start
-            cls._print_timings(timings)
             return forces  # No contacts in scene, return zero forces
 
         # STEP 2: Check sensor involvement
-        t2 = time.perf_counter()
         link_a = all_contacts["link_a"]
         link_b = all_contacts["link_b"]
 
@@ -474,17 +470,13 @@ class TactileFieldSensor(
             sensor_has_contact = ((link_a == sensor_link_idx) | (link_b == sensor_link_idx)).any()
         else:
             sensor_has_contact = ((link_a == sensor_link_idx) | (link_b == sensor_link_idx)).any()
-        timings['2_check_sensor_contact'] = time.perf_counter() - t2
 
         if not sensor_has_contact:
-            timings['total'] = time.perf_counter() - t_start
-            cls._print_timings(timings)
             return forces  # Sensor not in contact, return zero forces
 
-        # STEP 3: Get indenter pose
-        t3 = time.perf_counter()
-        links_pos = solver.get_links_pos()
-        links_quat = solver.get_links_quat()
+        # STEP 3: Get indenter pose (batched)
+        links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
+        links_quat = solver.get_links_quat()  # (B, L, 4) or (L, 4)
 
         if n_envs == 1 and links_pos.dim() == 2:
             indenter_pos = links_pos[indenter_link_idx, :].unsqueeze(0)  # (1, 3)
@@ -492,105 +484,73 @@ class TactileFieldSensor(
         else:
             indenter_pos = links_pos[:, indenter_link_idx, :]  # (B, 3)
             indenter_quat = links_quat[:, indenter_link_idx, :]  # (B, 4)
-        timings['3_get_indenter_pose'] = time.perf_counter() - t3
 
-        # STEP 4-8: Process each environment (GPU-native)
-        timings['4_coord_transform'] = 0.0
-        timings['5_bbox_prefilter'] = 0.0
-        timings['6_sdf_query'] = 0.0
-        timings['7_get_normals'] = 0.0
-        timings['8_compute_forces'] = 0.0
+        # STEP 4: Transform ALL points to indenter frame
+        points_relative = tactile_points_world - indenter_pos.unsqueeze(1)  # (B, N, 3)
+        # Transform all points in all envs at once
+        points_indenter_frame = inv_transform_by_quat(points_relative, indenter_quat)  # (B, N, 3)
 
-        for i_env in range(n_envs):
-            # Get tactile points for this environment
-            points_world_env = tactile_points_world[i_env]  # (N, 3) on GPU
+        # STEP 5: Bounding box pre-filtering
+        geom = shared_metadata.indenter_geoms[i_sensor]
+        sdf_res = geom.sdf_res
+        cell_size = geom.sdf_cell_size
+        max_extent = (sdf_res[0] - 1) * cell_size / 2.0
+        margin = 0.01  # 1cm margin
 
-            # Transform points to indenter local frame
-            indenter_pos_env = indenter_pos[i_env]
-            indenter_quat_env = indenter_quat[i_env]
+        # Filter points outside approximate bounds
+        in_bbox = (torch.abs(points_indenter_frame) <= max_extent + margin).all(dim=2)  # (B, N)
 
-            # STEP 4: Coordinate transformation (GPU-native)
-            t4 = time.perf_counter()
-            points_relative = points_world_env - indenter_pos_env
-            points_indenter_frame = inv_transform_by_quat(points_relative.unsqueeze(0), indenter_quat_env.unsqueeze(0)).squeeze(0)
-            timings['4_coord_transform'] += time.perf_counter() - t4
+        if not in_bbox.any():
+            return forces  # No points near the indenter in any environment
 
-            # STEP 5: Get indenter geometry and bounding box pre-filtering
-            t5 = time.perf_counter()
-            geom = shared_metadata.indenter_geoms[i_sensor]
-            sdf_res = geom.sdf_res
-            cell_size = geom.sdf_cell_size
-            max_extent = (sdf_res[0] - 1) * cell_size / 2.0
-            margin = 0.01  # 1cm margin
+        # STEP 6: Query SDF for ALL points in bbox
+        # Flatten points that are in bbox
+        points_to_query = points_indenter_frame[in_bbox]  # (M, 3) where M = sum of all in_bbox
 
-            # Filter points outside approximate bounds (GPU)
-            in_bbox = (torch.abs(points_indenter_frame) <= max_extent + margin).all(dim=1)
-            timings['5_bbox_prefilter'] += time.perf_counter() - t5
+        if points_to_query.shape[0] > 0:
+            # Query SDF for all points at once
+            signed_distances_flat, sdf_gradients_flat = cls._query_genesis_sdf_gpu(geom, points_to_query)  # (M,), (M, 3)
 
-            if not in_bbox.any():
-                continue  # No points near the indenter, skip this environment
+            # Scatter results back to original shape
+            signed_distances = torch.zeros((n_envs, n_points), device=gs.device, dtype=gs.tc_float)  # (B, N)
+            sdf_gradients = torch.zeros((n_envs, n_points, 3), device=gs.device, dtype=gs.tc_float)  # (B, N, 3)
+            signed_distances[in_bbox] = signed_distances_flat  # (B, N)
+            sdf_gradients[in_bbox] = sdf_gradients_flat  # (B, N, 3)
+        else:
+            signed_distances = torch.zeros((n_envs, n_points), device=gs.device, dtype=gs.tc_float)  # (B, N)
+            sdf_gradients = torch.zeros((n_envs, n_points, 3), device=gs.device, dtype=gs.tc_float)  # (B, N, 3)
 
-            # STEP 6: Query Genesis's precomputed SDF (GPU-native, only for points in bbox)
-            t6 = time.perf_counter()
-            signed_distances_bbox, sdf_gradients_bbox = cls._query_genesis_sdf_gpu(geom, points_indenter_frame[in_bbox])
+        # STEP 7: Compute penetration and normals
+        # Penetration depth: negative signed_distance means point is inside (penetrating)
+        penetration_depth = -signed_distances  # (B, N)
+        penetration_mask = penetration_depth > 0  # (B, N)
+        sdf_gradients = -sdf_gradients  # Flip gradients to point outward (B, N, 3)
 
-            # Expand to full grid
-            signed_distances = torch.zeros(n_points, device=gs.device, dtype=gs.tc_float)
-            sdf_gradients = torch.zeros((n_points, 3), device=gs.device, dtype=gs.tc_float)
-            signed_distances[in_bbox] = signed_distances_bbox
-            sdf_gradients[in_bbox] = sdf_gradients_bbox
-            timings['6_sdf_query'] += time.perf_counter() - t6
+        if penetration_mask.any():
+            # Normalize gradients to get normals (for penetrating points)
+            normals_indenter = sdf_gradients.clone()  # (B, N, 3)
+            norms = torch.norm(normals_indenter, dim=2, keepdim=True)  # (B, N, 1)
+            normals_indenter = normals_indenter / (norms + 1e-9)  # (B, N, 3)
+        else:
+            normals_indenter = sdf_gradients  # (B, N, 3)
 
-            # Penetration depth: negative signed_distance means point is inside (penetrating)
-            penetration_depth = -signed_distances
-            penetration_mask_local = penetration_depth > 0
-            sdf_gradients = -sdf_gradients  # Flip gradients to point outward
+        # STEP 8: Transform normals to world frame
+        normals_world = transform_by_quat(normals_indenter, indenter_quat)  # (B, N, 3)
 
-            if penetration_mask_local.any():
-                # STEP 7: Get normals from precomputed gradients (GPU)
-                t7 = time.perf_counter()
-                normals_indenter = sdf_gradients[penetration_mask_local]
-                norms = torch.norm(normals_indenter, dim=1, keepdim=True)
-                normals_indenter = normals_indenter / (norms + 1e-9)
-                timings['7_get_normals'] += time.perf_counter() - t7
+        # Compute normal forces (penalty method)
+        fc_norm = kn * penetration_depth  # (B, N)
 
-                # STEP 8: Compute forces (GPU)
-                t8 = time.perf_counter()
-                # Transform normals back to world frame (GPU)
-                normals_world = transform_by_quat(normals_indenter.unsqueeze(0), indenter_quat_env.unsqueeze(0)).squeeze(0)
+        # Apply forces in normal direction (only where there's penetration)
+        forces_world = fc_norm.unsqueeze(-1) * normals_world  # (B, N, 3)
 
-                # Compute normal forces (penalty method)
-                fc_norm = kn * penetration_depth[penetration_mask_local]
+        # Zero out forces where there's no penetration
+        forces_world = forces_world * penetration_mask.unsqueeze(-1).float()  # (B, N, 3)
+        forces = forces_world
 
-                # Apply forces in normal direction
-                forces_world = fc_norm.unsqueeze(-1) * normals_world
-                timings['8_compute_forces'] += time.perf_counter() - t8
-
-                # Store forces (already on GPU, no transfer needed!)
-                forces[i_env, penetration_mask_local, :] = forces_world
-
-        timings['total'] = time.perf_counter() - t_start
-        cls._print_timings(timings)
+        simulated_mean_force = forces[..., 2].mean()  # take z axis
+        gs.logger.info(f"Actual force: {mean_force.item():.4f}, Simulated force: {simulated_mean_force.item():.4f}, ratio: {simulated_mean_force.item()/ (mean_force.item()+1e-9):.4f}")
 
         return forces  # (B, N, 3)
-
-    @classmethod
-    def _print_timings(cls, timings):
-        """Print timing breakdown for profiling."""
-        total = timings['total']
-        gs.logger.info(f"\n{'='*70}")
-        gs.logger.info(f"TACTILE FIELD SENSOR TIMING BREAKDOWN (Total: {total*1000:.2f}ms)")
-        gs.logger.info(f"{'='*70}")
-
-        # Sort by time (descending)
-        sorted_timings = sorted([(k, v) for k, v in timings.items() if k != 'total'],
-                               key=lambda x: x[1], reverse=True)
-
-        for step_name, step_time in sorted_timings:
-            pct = (step_time / total * 100) if total > 0 else 0
-            gs.logger.info(f"  {step_name:30s}: {step_time*1000:7.2f}ms ({pct:5.1f}%)")
-
-        gs.logger.info(f"{'='*70}\n")
 
     @classmethod
     def _update_shared_cache(
