@@ -27,14 +27,10 @@
   </link>
 
   <!-- Soft elastomer pad layer (this is where we apply soft compliance) -->
-  <!-- Use prismatic joint with tight limits to preserve link separation -->
-  <joint name="elastomer_joint" type="prismatic">
+  <joint name="elastomer_joint" type="fixed">
     <parent link="sensor_base"/>
     <child link="elastomer_pad"/>
     <origin xyz="0 0 0.01" rpy="0 0 0"/>
-    <axis xyz="0 0 1"/>
-    <limit effort="1000.0" velocity="0.01" lower="-0.0001" upper="0.0001"/>
-    <dynamics damping="100.0" friction="0.0"/>
   </joint>
 
   <link name="elastomer_pad">
@@ -62,14 +58,10 @@
   </link>
 
   <!-- Elastomer tip frame (massless reference for tactile points) -->
-  <!-- Use prismatic joint with tight limits to preserve link separation -->
-  <joint name="elastomer_tip_joint" type="prismatic">
+  <joint name="elastomer_tip_joint" type="fixed">
     <parent link="sensor_base"/>
     <child link="elastomer_tip"/>
     <origin xyz="0 0 0.015" rpy="0 0 0"/>  <!-- Top surface of elastomer -->
-    <axis xyz="0 0 1"/>
-    <limit effort="1000.0" velocity="0.01" lower="-0.0001" upper="0.0001"/>
-    <dynamics damping="100.0" friction="0.0"/>
   </joint>
 
   <link name="elastomer_tip">

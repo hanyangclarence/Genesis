@@ -136,24 +136,28 @@ def main():
     scene.build()
     gs.logger.info(f"✓ Scene built. Sensor pad idx: {sensor_pad.idx}, Shape idx: {shape.idx}")
 
-    # Customize softness: make elastomer layer soft, keep base rigid
-    # Upper elastomer layer (link 1) - make VERY soft and compliant
-    elastomer_link = sensor_pad.links[1]
-    soft_timeconst = 0.1  # Very soft (50x larger than default 0.01)
+    # Customize softness: set the entire sensor pad (merged as single link) to be soft
+    gs.logger.info("Customizing sensor pad softness...")
+
+    # Calculate minimum allowed timeconst
+    substep_dt = scene.sim_options.dt / scene.sim_options.substeps
+    min_timeconst = 2.0 * substep_dt
+    gs.logger.info(f"  Simulation: dt={scene.sim_options.dt}, substeps={scene.sim_options.substeps}")
+    gs.logger.info(f"  Substep dt={substep_dt:.6f}, min_timeconst={min_timeconst:.6f}")
+
+    # Set softness for the entire sensor pad (all geometries in all links)
+    soft_timeconst = 0.01  # Soft compliance (10x larger than default 0.01)
     soft_params = np.array([soft_timeconst, 0.5, 1e-4, 1e-4, 0.0, 1e-4, 1.0])
 
-    for geom in elastomer_link.geoms:
-        geom.set_sol_params(soft_params)
-    elastomer_link.set_friction(0.8)
+    gs.logger.info(f"  Setting sensor pad (entity {sensor_pad.idx}, {len(sensor_pad.links)} link(s)) to soft")
+    for link in sensor_pad.links:
+        for geom in link.geoms:
+            gs.logger.info(f"    Link {link.idx}, geom {geom.idx}: before timeconst={geom.sol_params[0]:.6f}")
+            geom.set_sol_params(soft_params)
+            gs.logger.info(f"    Link {link.idx}, geom {geom.idx}: after  timeconst={geom.sol_params[0]:.6f}")
+        link.set_friction(0.8)  # High friction for tactile grip
 
-    # Lower base layer (link 0) - keep rigid
-    base_link = sensor_pad.links[0]
-    stiff_timeconst = 0.01  # Stiff (default)
-    stiff_params = np.array([stiff_timeconst, 0.0, 1e-4, 1e-4, 0.0, 1e-4, 1.0])
-
-    for geom in base_link.geoms:
-        geom.set_sol_params(stiff_params)
-    base_link.set_friction(0.5)
+    gs.logger.info(f"  ✓ Sensor pad: timeconst={soft_timeconst} (soft), friction=0.8")
 
     # Start camera recording if camera was added
     if cam is not None:
