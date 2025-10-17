@@ -14,6 +14,7 @@ import torch
 import genesis as gs
 from genesis.utils.geom import transform_by_quat
 from genesis.utils.misc import concat_with_tensor, make_tensor_field
+from genesis.utils.geom import inv_transform_by_quat
 
 from .base_sensor import (
     NoisySensorMetadataMixin,
@@ -320,61 +321,88 @@ class TactileFieldSensor(
             offset += n_points
 
     @classmethod
-    def _query_genesis_sdf_cpu(cls, geom, points_mesh_frame):
+    def _query_genesis_sdf_gpu(cls, geom, points_mesh_frame_torch):
         """
-        Query Genesis's precomputed SDF using CPU-based trilinear interpolation.
+        Query Genesis's precomputed SDF using GPU-accelerated trilinear interpolation.
 
         Args:
             geom: RigidGeom object with precomputed SDF
-            points_mesh_frame: numpy array of shape (N, 3) in mesh coordinate frame
+            points_mesh_frame_torch: torch.Tensor of shape (N, 3) in mesh coordinate frame (on GPU)
 
         Returns:
-            sdf_values: numpy array of shape (N,) with signed distances
-            sdf_grads: numpy array of shape (N, 3) with gradients (normals)
+            sdf_values: torch.Tensor of shape (N,) with signed distances (on GPU)
+            sdf_grads: torch.Tensor of shape (N, 3) with gradients/normals (on GPU)
         """
-        N = points_mesh_frame.shape[0]
-        sdf_values = np.zeros(N, dtype=np.float32)
-        sdf_grads = np.zeros((N, 3), dtype=np.float32)
+        N = points_mesh_frame_torch.shape[0]
+        device = points_mesh_frame_torch.device
 
-        # Transform to SDF grid coordinates
-        T = geom.T_mesh_to_sdf
-        points_homo = np.concatenate([points_mesh_frame, np.ones((N, 1))], axis=1)
+        # Convert SDF data to torch tensors on GPU (cached for efficiency)
+        if not hasattr(geom, '_sdf_val_torch'):
+            geom._sdf_val_torch = torch.from_numpy(geom.sdf_val).to(device=device, dtype=gs.tc_float)
+            geom._sdf_grad_torch = torch.from_numpy(geom.sdf_grad).to(device=device, dtype=gs.tc_float)
+            geom._T_mesh_to_sdf_torch = torch.from_numpy(geom.T_mesh_to_sdf).to(device=device, dtype=gs.tc_float)
+
+        # Transform to SDF grid coordinates (vectorized)
+        T = geom._T_mesh_to_sdf_torch
+        points_homo = torch.cat([points_mesh_frame_torch, torch.ones((N, 1), device=device, dtype=gs.tc_float)], dim=1)
         points_sdf = (T @ points_homo.T).T[:, :3]  # (N, 3)
 
-        res = geom.sdf_res
+        res = torch.tensor(geom.sdf_res, device=device, dtype=gs.tc_float)
+        res_int = geom.sdf_res
         cell_size = geom.sdf_cell_size
 
-        for i in range(N):
-            point = points_sdf[i]
+        # Identify points outside grid
+        outside_mask = (points_sdf >= res - 1).any(dim=1) | (points_sdf < 0).any(dim=1)
+        inside_mask = ~outside_mask
 
-            # Check if outside grid (use proxy distance)
-            if (point >= res - 1).any() or (point < 0).any():
-                # Outside grid: use distance to grid center as proxy
-                center = (res - 1) / 2.0
-                dist_to_center = np.linalg.norm(point - center)
-                sdf_values[i] = dist_to_center / cell_size + geom.sdf_max
-                sdf_grads[i] = (point - center) / (dist_to_center + 1e-9)
-                continue
+        # Initialize outputs
+        sdf_values = torch.zeros(N, device=device, dtype=gs.tc_float)
+        sdf_grads = torch.zeros((N, 3), device=device, dtype=gs.tc_float)
 
-            # Inside grid: use trilinear interpolation
-            base = np.floor(point).astype(int)
-            base = np.clip(base, 0, res - 2)
+        # Handle outside points (proxy distance)
+        if outside_mask.any():
+            center = (res - 1) / 2.0
+            points_outside = points_sdf[outside_mask]
+            diff = points_outside - center
+            dist_to_center = torch.norm(diff, dim=1)
+            sdf_values[outside_mask] = dist_to_center / cell_size + geom.sdf_max
+            sdf_grads[outside_mask] = diff / (dist_to_center[:, None] + 1e-9)
 
-            sdf_val = 0.0
-            grad = np.zeros(3, dtype=np.float32)
+        # Handle inside points (vectorized trilinear interpolation)
+        if inside_mask.any():
+            points_inside = points_sdf[inside_mask]  # (M, 3)
+            M = points_inside.shape[0]
 
-            for di in range(2):
-                for dj in range(2):
-                    for dk in range(2):
-                        offset = np.array([di, dj, dk])
-                        idx = tuple(base + offset)
-                        weight = np.prod(1.0 - np.abs(point - (base + offset)))
+            # Compute base indices and clip (vectorized)
+            base = torch.floor(points_inside).to(torch.int64)  # (M, 3)
+            base = torch.clamp(base, 0, int(res_int[0]) - 2)
 
-                        sdf_val += weight * geom.sdf_val[idx]
-                        grad += weight * geom.sdf_grad[idx]
+            # Generate all 8 corner offsets (2^3 = 8 corners of cube)
+            offsets = torch.tensor([[di, dj, dk] for di in range(2) for dj in range(2) for dk in range(2)],
+                                  device=device, dtype=torch.int64)  # (8, 3)
 
-            sdf_values[i] = sdf_val
-            sdf_grads[i] = grad
+            # Compute weights for all corners (vectorized)
+            corners = base[:, None, :] + offsets[None, :, :]  # (M, 8, 3)
+            weights_xyz = 1.0 - torch.abs(points_inside[:, None, :] - corners.float())  # (M, 8, 3)
+            weights = torch.prod(weights_xyz, dim=2)  # (M, 8)
+
+            # Get SDF values and gradients at all corners
+            # Convert 3D indices to flat indices
+            corner_indices = (corners[:, :, 0] * res_int[1] * res_int[2] +
+                            corners[:, :, 1] * res_int[2] +
+                            corners[:, :, 2])  # (M, 8)
+
+            # Flatten SDF arrays for indexing
+            sdf_val_flat = geom._sdf_val_torch.reshape(-1)
+            sdf_grad_flat = geom._sdf_grad_torch.reshape(-1, 3)
+
+            # Sample SDF values and gradients (vectorized)
+            corner_vals = sdf_val_flat[corner_indices]  # (M, 8)
+            corner_grads = sdf_grad_flat[corner_indices]  # (M, 8, 3)
+
+            # Compute weighted sum (trilinear interpolation)
+            sdf_values[inside_mask] = torch.sum(weights * corner_vals, dim=1)  # (M,)
+            sdf_grads[inside_mask] = torch.sum(weights[:, :, None] * corner_grads, dim=1)  # (M, 3)
 
         return sdf_values, sdf_grads
 
@@ -466,17 +494,12 @@ class TactileFieldSensor(
             indenter_quat = links_quat[:, indenter_link_idx, :]  # (B, 4)
         timings['3_get_indenter_pose'] = time.perf_counter() - t3
 
-        # STEP 4-10: Process each environment
-        timings['4_gpu_to_cpu'] = 0.0
-        timings['5_coord_transform'] = 0.0
-        timings['6_bbox_prefilter'] = 0.0
-        timings['7_sdf_query'] = 0.0
-        timings['8_get_normals'] = 0.0
-        timings['9_compute_forces'] = 0.0
-        timings['10_cpu_to_gpu'] = 0.0
-
-        # Cache scipy rotation objects to avoid repeated imports
-        from scipy.spatial.transform import Rotation as R
+        # STEP 4-8: Process each environment (GPU-native)
+        timings['4_coord_transform'] = 0.0
+        timings['5_bbox_prefilter'] = 0.0
+        timings['6_sdf_query'] = 0.0
+        timings['7_get_normals'] = 0.0
+        timings['8_compute_forces'] = 0.0
 
         for i_env in range(n_envs):
             # Get tactile points for this environment
@@ -486,89 +509,65 @@ class TactileFieldSensor(
             indenter_pos_env = indenter_pos[i_env]
             indenter_quat_env = indenter_quat[i_env]
 
-            # STEP 4: GPU to CPU transfer (batched)
+            # STEP 4: Coordinate transformation (GPU-native)
             t4 = time.perf_counter()
-            points_world_np = points_world_env.cpu().numpy()
-            indenter_pos_np = indenter_pos_env.cpu().numpy()
-            indenter_quat_np = indenter_quat_env.cpu().numpy()
-            timings['4_gpu_to_cpu'] += time.perf_counter() - t4
+            points_relative = points_world_env - indenter_pos_env
+            points_indenter_frame = inv_transform_by_quat(points_relative.unsqueeze(0), indenter_quat_env.unsqueeze(0)).squeeze(0)
+            timings['4_coord_transform'] += time.perf_counter() - t4
 
-            # STEP 5: Coordinate transformation
+            # STEP 5: Get indenter geometry and bounding box pre-filtering
             t5 = time.perf_counter()
-            points_relative_np = points_world_np - indenter_pos_np
-            rot = R.from_quat([indenter_quat_np[1], indenter_quat_np[2],
-                              indenter_quat_np[3], indenter_quat_np[0]])  # x,y,z,w format
-            points_indenter_frame = rot.inv().apply(points_relative_np)
-            timings['5_coord_transform'] += time.perf_counter() - t5
-
-            # STEP 6: Get indenter geometry
-            t6 = time.perf_counter()
             geom = shared_metadata.indenter_geoms[i_sensor]
-
-            # Bounding box pre-filtering using Genesis SDF grid bounds
-            # Convert SDF grid bounds to mesh frame
             sdf_res = geom.sdf_res
             cell_size = geom.sdf_cell_size
-            # SDF grid bounds in mesh frame (approximate)
             max_extent = (sdf_res[0] - 1) * cell_size / 2.0
-            margin = 0.01  # 1cm margin for near-surface points
+            margin = 0.01  # 1cm margin
 
-            # Filter points outside approximate bounds
-            in_bbox = np.all((np.abs(points_indenter_frame) <= max_extent + margin), axis=1)
-            timings['6_bbox_prefilter'] += time.perf_counter() - t6
+            # Filter points outside approximate bounds (GPU)
+            in_bbox = (torch.abs(points_indenter_frame) <= max_extent + margin).all(dim=1)
+            timings['5_bbox_prefilter'] += time.perf_counter() - t5
 
             if not in_bbox.any():
                 continue  # No points near the indenter, skip this environment
 
-            # STEP 7: Query Genesis's precomputed SDF (only for points in bbox)
-            t7 = time.perf_counter()
-            # Query all points, but SDF function will handle out-of-bounds efficiently
-            signed_distances, sdf_gradients = cls._query_genesis_sdf_cpu(geom, points_indenter_frame[in_bbox])
+            # STEP 6: Query Genesis's precomputed SDF (GPU-native, only for points in bbox)
+            t6 = time.perf_counter()
+            signed_distances_bbox, sdf_gradients_bbox = cls._query_genesis_sdf_gpu(geom, points_indenter_frame[in_bbox])
 
             # Expand to full grid
-            signed_distances_full = np.zeros(n_points, dtype=np.float32)
-            sdf_gradients_full = np.zeros((n_points, 3), dtype=np.float32)
-            signed_distances_full[in_bbox] = signed_distances
-            sdf_gradients_full[in_bbox] = sdf_gradients
-
-            signed_distances = signed_distances_full
-            sdf_gradients = sdf_gradients_full
-            timings['7_sdf_query'] += time.perf_counter() - t7
+            signed_distances = torch.zeros(n_points, device=gs.device, dtype=gs.tc_float)
+            sdf_gradients = torch.zeros((n_points, 3), device=gs.device, dtype=gs.tc_float)
+            signed_distances[in_bbox] = signed_distances_bbox
+            sdf_gradients[in_bbox] = sdf_gradients_bbox
+            timings['6_sdf_query'] += time.perf_counter() - t6
 
             # Penetration depth: negative signed_distance means point is inside (penetrating)
-            penetration_depth = - signed_distances
+            penetration_depth = -signed_distances
             penetration_mask_local = penetration_depth > 0
             sdf_gradients = -sdf_gradients  # Flip gradients to point outward
 
             if penetration_mask_local.any():
-                # STEP 8: Get normals from precomputed gradients
-                t8 = time.perf_counter()
+                # STEP 7: Get normals from precomputed gradients (GPU)
+                t7 = time.perf_counter()
                 normals_indenter = sdf_gradients[penetration_mask_local]
-                norms = np.linalg.norm(normals_indenter, axis=1, keepdims=True)
+                norms = torch.norm(normals_indenter, dim=1, keepdim=True)
                 normals_indenter = normals_indenter / (norms + 1e-9)
-                timings['8_get_normals'] += time.perf_counter() - t8
+                timings['7_get_normals'] += time.perf_counter() - t7
 
-                # STEP 9: Compute forces
-                t9 = time.perf_counter()
-                # Transform normals back to world frame
-                normals_world = rot.apply(normals_indenter)
+                # STEP 8: Compute forces (GPU)
+                t8 = time.perf_counter()
+                # Transform normals back to world frame (GPU)
+                normals_world = transform_by_quat(normals_indenter.unsqueeze(0), indenter_quat_env.unsqueeze(0)).squeeze(0)
 
                 # Compute normal forces (penalty method)
                 fc_norm = kn * penetration_depth[penetration_mask_local]
 
                 # Apply forces in normal direction
-                forces_world = fc_norm[:, None] * normals_world
-                timings['9_compute_forces'] += time.perf_counter() - t9
+                forces_world = fc_norm.unsqueeze(-1) * normals_world
+                timings['8_compute_forces'] += time.perf_counter() - t8
 
-                # STEP 10: CPU to GPU transfer
-                t10 = time.perf_counter()
-                # Map back to full tactile grid
-                penetrated_indices = torch.tensor(penetration_mask_local, device=gs.device)
-
-                forces[i_env, penetrated_indices, :] = torch.tensor(
-                    forces_world, dtype=gs.tc_float, device=gs.device
-                )
-                timings['10_cpu_to_gpu'] += time.perf_counter() - t10
+                # Store forces (already on GPU, no transfer needed!)
+                forces[i_env, penetration_mask_local, :] = forces_world
 
         timings['total'] = time.perf_counter() - t_start
         cls._print_timings(timings)
