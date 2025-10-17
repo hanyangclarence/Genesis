@@ -39,7 +39,7 @@ def main():
             substeps=10,
         ),
         rigid_options=gs.options.RigidOptions(
-            constraint_timeconst=0.05,  # the smaller, the stiffer the constraint
+            constraint_timeconst=0.01,  # the smaller, the stiffer the constraint
             enable_collision=True,
             enable_self_collision=False,
         ),
@@ -51,47 +51,51 @@ def main():
     )
 
     ########################## entities ##########################
-    # Ground plane (optional, for reference)
-    scene.add_entity(gs.morphs.Plane(pos=(0, 0, -0.1)))
+    # Ground plane at z=0
+    scene.add_entity(gs.morphs.Plane(pos=(0, 0, 0)))
+    gs.logger.info("Ground plane added at z=0")
 
-    # Tactile sensor pad (fixed in space, tilted to face the incoming sphere)
-    # Tilt the sensor pad to match the impact angle
+    # Tactile sensor pad resting on the ground (not fixed, preserving link structure)
+    # The sensor base bottom is at z=0, top is at z=0.01
+    # The elastomer layer top is at z=0.015
     sensor_tilt_angle = np.radians(args.angle)  # Tilt sensor to meet sphere
     sensor_quat = gs.utils.geom.xyz_to_quat(np.array([sensor_tilt_angle, 0, 0]))
 
     sensor_pad = scene.add_entity(
         gs.morphs.URDF(
             file="examples/sensors/tactile_pad_sensor.urdf",
-            pos=(0.0, 0.0, 0.1),
+            pos=(0.0, 0.0, 0.005),  # Base center at z=0.005 (base is 0.01m thick, so bottom touches ground)
             quat=sensor_quat,
-            fixed=True,  # Fixed in space
+            fixed=False,  # Not fixed - will rest on ground naturally, preserving link structure
         )
     )
-    gs.logger.info(f"Sensor pad added at z=0.1m, tilted {args.angle:.1f}° around X-axis")
+    gs.logger.info(f"Sensor pad added on ground, tilted {args.angle:.1f}° around X-axis")
 
-    # Create indenter shape
+    # Create indenter shape - drop from above
     shape_size = args.size
+    drop_height = 0.15  # Drop from 15cm above the sensor surface
+
     if args.shape == "sphere":
         shape = scene.add_entity(
             gs.morphs.Sphere(
                 radius=shape_size,
-                pos=(0, 0.0, 0.2),
+                pos=(0, 0.0, drop_height),
                 fixed=False,
             )
         )
-        gs.logger.info(f"Created sphere indenter (radius={shape_size}m)")
+        gs.logger.info(f"Created sphere indenter (radius={shape_size}m) at height {drop_height}m")
     elif args.shape == "cube":
         shape = scene.add_entity(
             gs.morphs.Box(
                 size=(shape_size, shape_size, shape_size),
-                pos=(0.0, 0.0, 0.18),  # Start 8cm above origin (sensor top is at z=0.015)
+                pos=(0.0, 0.0, drop_height),
                 fixed=False,
             )
         )
-        gs.logger.info(f"Created cube indenter (size={shape_size}m)")
+        gs.logger.info(f"Created cube indenter (size={shape_size}m) at height {drop_height}m")
     else:
         raise ValueError("Invalid shape choice")
-    gs.logger.info(f"Object added at (0, 0, 0.2), will impact at {args.angle}° angle")
+    gs.logger.info(f"Object will drop onto sensor at {args.angle}° angle")
 
     ########################## sensors ##########################
     # Add sensor BEFORE building scene
@@ -131,6 +135,25 @@ def main():
     gs.logger.info("Building scene...")
     scene.build()
     gs.logger.info(f"✓ Scene built. Sensor pad idx: {sensor_pad.idx}, Shape idx: {shape.idx}")
+
+    # Customize softness: make elastomer layer soft, keep base rigid
+    # Upper elastomer layer (link 1) - make VERY soft and compliant
+    elastomer_link = sensor_pad.links[1]
+    soft_timeconst = 0.1  # Very soft (50x larger than default 0.01)
+    soft_params = np.array([soft_timeconst, 0.5, 1e-4, 1e-4, 0.0, 1e-4, 1.0])
+
+    for geom in elastomer_link.geoms:
+        geom.set_sol_params(soft_params)
+    elastomer_link.set_friction(0.8)
+
+    # Lower base layer (link 0) - keep rigid
+    base_link = sensor_pad.links[0]
+    stiff_timeconst = 0.01  # Stiff (default)
+    stiff_params = np.array([stiff_timeconst, 0.0, 1e-4, 1e-4, 0.0, 1e-4, 1.0])
+
+    for geom in base_link.geoms:
+        geom.set_sol_params(stiff_params)
+    base_link.set_friction(0.5)
 
     # Start camera recording if camera was added
     if cam is not None:
