@@ -63,7 +63,7 @@ def main():
 
     sensor_pad = scene.add_entity(
         gs.morphs.URDF(
-            file="examples/sensors/tactile_pad_sensor.urdf",
+            file="assets/tactile_pad_sensor.urdf",
             pos=(0.0, 0.0, 0.005),  # Base center at z=0.005 (base is 0.01m thick, so bottom touches ground)
             quat=sensor_quat,
             fixed=False,  # Not fixed - will rest on ground naturally, preserving link structure
