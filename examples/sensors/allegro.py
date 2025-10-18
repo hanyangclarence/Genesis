@@ -17,7 +17,7 @@ def main():
         camera_pos=(0, -0.5, 0.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=40,
-        max_FPS=60,
+        max_FPS=15,
     )
 
     scene = gs.Scene(
@@ -38,53 +38,62 @@ def main():
             pos=(0.07, 0, 0.1),
         ),
     )
-    allegro = scene.add_entity(
+    shadow_hand = scene.add_entity(
         gs.morphs.URDF(
-            file="assets/allegro_hand/allegro_hand_right_glb.urdf",
+            file="assets/shadow_hand/shadow_hand_right_glb.urdf",
             merge_fixed_links=True,
             fixed=True,
-            pos=(0, 0, 0.1),
+            pos=(0, 0.33, 0.1),
             euler=(90, 0, 0),
         ),
     )
     ########################## build ##########################
     scene.build()
 
+    # Shadow Hand joints: WR (wrist), FF (first finger/index), MF (middle), RF (ring), LF (little), TH (thumb)
     joints_name = (
-        "joint_0.0",
-        "joint_4.0",
-        "joint_8.0",
-        "joint_12.0",
-        "joint_1.0",
-        "joint_5.0",
-        "joint_9.0",
-        "joint_13.0",
-        "joint_2.0",
-        "joint_6.0",
-        "joint_10.0",
-        "joint_14.0",
-        "joint_3.0",
-        "joint_7.0",
-        "joint_11.0",
-        "joint_15.0",
+        "WRJ2", #"WRJ1",  # Wrist
+        "FFJ4", "FFJ3", "FFJ2", "FFJ1",  # First Finger (Index)
+        "MFJ4", "MFJ3", "MFJ2", "MFJ1",  # Middle Finger
+        "RFJ4", "RFJ3", "RFJ2", "RFJ1",  # Ring Finger
+        "LFJ5", "LFJ4", "LFJ3", "LFJ2", "LFJ1",  # Little Finger
+        "THJ5", "THJ4", "THJ3", "THJ2", "THJ1",  # Thumb
     )
-    motors_dof_idx = [allegro.get_joint(name).dofs_idx_local[0] for name in joints_name]
+    motors_dof_idx = [shadow_hand.get_joint(name).dofs_idx_local[0] for name in joints_name]
 
     # Optional: set control gains
-    allegro.set_dofs_kp(
-        np.array([200, 200, 200, 200,] * 4),
+    shadow_hand.set_dofs_kp(
+        np.array([200] * len(motors_dof_idx)),
         motors_dof_idx,
     )
-    allegro.set_dofs_kv(
-        np.array([10, 10, 10, 10] * 4),
+    shadow_hand.set_dofs_kv(
+        np.array([10] * len(motors_dof_idx)),
         motors_dof_idx,
     )
+
+    pose = np.array([
+        0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0,
+        0.0, 0.0, 0.0, 0.0, 0.0,
+        -1.0, 1.0, 0.0, 0.0, 0.0,
+    ])
+    delta_pose = np.array([
+        0.01,
+        0.00, 0.02, 0.01, 0.01,
+        0.00, 0.02, 0.01, 0.01,
+        0.00, 0.02, 0.01, 0.01,
+        0.00, 0.02, 0.02, 0.01, 0.01,
+        0.00, -0.01, 0.01, 0.01, 0.01,
+    ])
+    
 
     def grasp():
         # PD control
-        for i in range(100):
-            allegro.control_dofs_position(
-                i * np.array([0.01] * 16),
+        for i in range(150):
+            shadow_hand.control_dofs_position(
+                pose + i * delta_pose,
                 motors_dof_idx,
             )
             scene.step(refresh_visualizer=False)
