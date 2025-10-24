@@ -10,3 +10,5 @@ from .data_handlers import (
     NPZFileWriter,
     CallbackHandler,
 )
+from .tactile_field import TactileFieldSensorOptions as TactileField
+from .tactile_field import TactileFieldSensor
