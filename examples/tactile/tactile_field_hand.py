@@ -174,7 +174,6 @@ def main():
                 indenter_link_idx_local=0,
                 tactile_points_local=local_positions,  # Use custom points!
                 kn=args.kn,
-                draw_debug=False,
             )
         )
 

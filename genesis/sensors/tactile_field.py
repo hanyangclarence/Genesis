@@ -5,25 +5,18 @@ Inspired by TacSL implementation from IsaacGymEnvs
 Uses Genesis's precomputed SDF for fast penetration depth and normal queries.
 """
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Type, Optional, Any
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional, Any
 
 import gstaichi as ti
 import numpy as np
 import torch
 
 import genesis as gs
-from genesis.utils.geom import transform_by_quat
-from genesis.utils.misc import concat_with_tensor, make_tensor_field
-from genesis.utils.geom import inv_transform_by_quat
+from genesis.utils.geom import transform_by_quat, inv_transform_by_quat
+from genesis.engine.solvers import RigidSolver
 
 from .base_sensor import (
-    NoisySensorMetadataMixin,
-    NoisySensorMixin,
-    NoisySensorOptionsMixin,
-    RigidSensorMetadataMixin,
-    RigidSensorMixin,
-    RigidSensorOptionsMixin,
     Sensor,
     SensorOptions,
     SharedSensorMetadata,
@@ -37,12 +30,16 @@ if TYPE_CHECKING:
     from .sensor_manager import SensorManager
 
 
-class TactileFieldSensorOptions(RigidSensorOptionsMixin, NoisySensorOptionsMixin, SensorOptions):
+class TactileFieldSensorOptions(SensorOptions):
     """
     Sensor that returns dense tactile force field on a surface using SDF-based penetration.
 
     Parameters
     ----------
+    entity_idx : int
+        Entity index of the rigid entity with the tactile sensor
+    link_idx_local : int
+        Local link index within the entity (default: 0)
     num_rows : int
         Number of tactile points in the first dimension (default: 10)
     num_cols : int
@@ -67,6 +64,8 @@ class TactileFieldSensorOptions(RigidSensorOptionsMixin, NoisySensorOptionsMixin
         Contact damping coefficient (default: 0.003)
     """
 
+    entity_idx: int
+    link_idx_local: int = 0
     num_rows: int = 10
     num_cols: int = 10
     elastomer_thickness: float = 0.005
@@ -81,21 +80,25 @@ class TactileFieldSensorOptions(RigidSensorOptionsMixin, NoisySensorOptionsMixin
 
 
 @dataclass
-class TactileFieldSensorMetadata(RigidSensorMetadataMixin, NoisySensorMetadataMixin, SharedSensorMetadata):
+class TactileFieldSensorMetadata(SharedSensorMetadata):
     """
     Shared metadata for all tactile field sensors.
     """
+    # Solver reference
+    solver: RigidSolver | None = None
+    # Sensor link indices (global)
+    links_idx: list[int] = field(default_factory=list)
     # Tactile point positions in local frame
-    tactile_points_local: torch.Tensor = make_tensor_field((0, 3))
+    tactile_points_local: torch.Tensor = field(default_factory=lambda: torch.tensor([], dtype=gs.tc_float, device=gs.device))
     # Number of tactile points per sensor
-    n_tactile_points: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    n_tactile_points: list[int] = field(default_factory=list)
     # Indenter link indices (global)
-    indenter_links_idx: torch.Tensor = make_tensor_field((0,), dtype_factory=lambda: gs.tc_int)
+    indenter_links_idx: list[int] = field(default_factory=list)
     # Force field parameters per sensor
-    kn: torch.Tensor = make_tensor_field((0, 1))
-    kt: torch.Tensor = make_tensor_field((0, 1))
-    mu: torch.Tensor = make_tensor_field((0, 1))
-    damping: torch.Tensor = make_tensor_field((0, 1))
+    kn: torch.Tensor = field(default_factory=lambda: torch.tensor([], dtype=gs.tc_float, device=gs.device))
+    kt: torch.Tensor = field(default_factory=lambda: torch.tensor([], dtype=gs.tc_float, device=gs.device))
+    mu: torch.Tensor = field(default_factory=lambda: torch.tensor([], dtype=gs.tc_float, device=gs.device))
+    damping: torch.Tensor = field(default_factory=lambda: torch.tensor([], dtype=gs.tc_float, device=gs.device))
     # Indenter geometry (for Genesis precomputed SDF access)
     # Single geometry shared by all sensors
     indenter_geom: object = None
@@ -111,106 +114,9 @@ class TactileFieldSensorMetadata(RigidSensorMetadataMixin, NoisySensorMetadataMi
     precomputed_kn_per_point: torch.Tensor = None  # (total_points,) - kn value for each point
 
 
-@ti.kernel
-def tactile_sdf_query_kernel(
-    points_mesh_frame: ti.types.ndarray(),  # (N, 3) - points in mesh frame
-    sdf_val: ti.types.ndarray(),  # (D, H, W) - SDF values
-    sdf_grad: ti.types.ndarray(),  # (D, H, W, 3) - SDF gradients
-    T_mesh_to_sdf: ti.types.ndarray(),  # (4, 4) - transformation matrix
-    sdf_res: ti.types.ndarray(),  # (3,) - SDF resolution
-    sdf_cell_size: float,
-    sdf_max: float,
-    # Outputs
-    sdf_values_out: ti.types.ndarray(),  # (N,)
-    sdf_grads_out: ti.types.ndarray(),  # (N, 3)
-):
-    """
-    Taichi kernel for batched SDF queries with trilinear interpolation.
-    Much faster than PyTorch version for small-to-medium batch sizes.
-    """
-    N = points_mesh_frame.shape[0]
-    res_x, res_y, res_z = sdf_res[0], sdf_res[1], sdf_res[2]
-
-    for i_point in range(N):
-        # Transform point to SDF coordinates
-        px = points_mesh_frame[i_point, 0]
-        py = points_mesh_frame[i_point, 1]
-        pz = points_mesh_frame[i_point, 2]
-
-        # Apply transformation: p_sdf = T @ [p_mesh, 1]
-        sx = T_mesh_to_sdf[0, 0] * px + T_mesh_to_sdf[0, 1] * py + T_mesh_to_sdf[0, 2] * pz + T_mesh_to_sdf[0, 3]
-        sy = T_mesh_to_sdf[1, 0] * px + T_mesh_to_sdf[1, 1] * py + T_mesh_to_sdf[1, 2] * pz + T_mesh_to_sdf[1, 3]
-        sz = T_mesh_to_sdf[2, 0] * px + T_mesh_to_sdf[2, 1] * py + T_mesh_to_sdf[2, 2] * pz + T_mesh_to_sdf[2, 3]
-
-        # Check if outside grid
-        is_outside = (sx >= res_x - 1) or (sy >= res_y - 1) or (sz >= res_z - 1) or (sx < 0) or (sy < 0) or (sz < 0)
-
-        if is_outside:
-            # Proxy distance to center
-            center_x = (res_x - 1) / 2.0
-            center_y = (res_y - 1) / 2.0
-            center_z = (res_z - 1) / 2.0
-
-            diff_x = sx - center_x
-            diff_y = sy - center_y
-            diff_z = sz - center_z
-            dist_to_center = ti.sqrt(diff_x * diff_x + diff_y * diff_y + diff_z * diff_z)
-
-            sdf_values_out[i_point] = dist_to_center / sdf_cell_size + sdf_max
-
-            # Gradient points away from center
-            norm = ti.sqrt(diff_x * diff_x + diff_y * diff_y + diff_z * diff_z) + 1e-9
-            sdf_grads_out[i_point, 0] = diff_x / norm
-            sdf_grads_out[i_point, 1] = diff_y / norm
-            sdf_grads_out[i_point, 2] = diff_z / norm
-        else:
-            # Trilinear interpolation
-            base_x = ti.floor(sx, ti.i32)
-            base_y = ti.floor(sy, ti.i32)
-            base_z = ti.floor(sz, ti.i32)
-
-            # Clamp to valid range
-            base_x = ti.max(0, ti.min(base_x, res_x - 2))
-            base_y = ti.max(0, ti.min(base_y, res_y - 2))
-            base_z = ti.max(0, ti.min(base_z, res_z - 2))
-
-            # Interpolate SDF value
-            sdf_val_interp = 0.0
-            grad_x_interp = 0.0
-            grad_y_interp = 0.0
-            grad_z_interp = 0.0
-
-            for di in ti.static(range(2)):
-                for dj in ti.static(range(2)):
-                    for dk in ti.static(range(2)):
-                        ix = base_x + di
-                        iy = base_y + dj
-                        iz = base_z + dk
-
-                        # Trilinear weight
-                        wx = 1.0 - ti.abs(sx - ti.cast(ix, gs.ti_float))
-                        wy = 1.0 - ti.abs(sy - ti.cast(iy, gs.ti_float))
-                        wz = 1.0 - ti.abs(sz - ti.cast(iz, gs.ti_float))
-                        w = wx * wy * wz
-
-                        # Sample SDF value and gradient
-                        sdf_val_interp += w * sdf_val[ix, iy, iz]
-                        grad_x_interp += w * sdf_grad[ix, iy, iz, 0]
-                        grad_y_interp += w * sdf_grad[ix, iy, iz, 1]
-                        grad_z_interp += w * sdf_grad[ix, iy, iz, 2]
-
-            sdf_values_out[i_point] = sdf_val_interp
-            sdf_grads_out[i_point, 0] = grad_x_interp
-            sdf_grads_out[i_point, 1] = grad_y_interp
-            sdf_grads_out[i_point, 2] = grad_z_interp
-
-
-@register_sensor(TactileFieldSensorOptions, TactileFieldSensorMetadata, tuple)
-class TactileFieldSensor(
-    RigidSensorMixin[TactileFieldSensorMetadata],
-    NoisySensorMixin[TactileFieldSensorMetadata],
-    Sensor[TactileFieldSensorMetadata],
-):
+@register_sensor(TactileFieldSensorOptions, TactileFieldSensorMetadata)
+@ti.data_oriented
+class TactileFieldSensor(Sensor):
     """
     Dense tactile force field sensor using SDF-based penetration depth computation.
 
@@ -225,7 +131,6 @@ class TactileFieldSensor(
         self,
         sensor_options: TactileFieldSensorOptions,
         sensor_idx: int,
-        data_cls: Type[tuple],
         sensor_manager: "SensorManager",
     ):
         # Calculate number of tactile points before calling super().__init__
@@ -237,11 +142,9 @@ class TactileFieldSensor(
             self._n_tactile_points = sensor_options.num_rows * sensor_options.num_cols
         self._tactile_points_local = None
         self._sdf = None
-        super().__init__(sensor_options, sensor_idx, data_cls, sensor_manager)
+        super().__init__(sensor_options, sensor_idx, sensor_manager)
 
     def build(self):
-        super().build()
-
         if self._shared_metadata.solver is None:
             self._shared_metadata.solver = self._manager._sim.rigid_solver
 
@@ -251,40 +154,40 @@ class TactileFieldSensor(
         # Get indenter geometry (use Genesis's precomputed SDF)
         self._get_indenter_geom()
 
+        # Store sensor link index
+        entity = self._shared_metadata.solver.entities[self._options.entity_idx]
+        sensor_link_idx = self._options.link_idx_local + entity.link_start
+        self._shared_metadata.links_idx.append(sensor_link_idx)
+
         # Store tactile points in shared metadata
-        self._shared_metadata.tactile_points_local = concat_with_tensor(
+        self._shared_metadata.tactile_points_local = torch.cat([
             self._shared_metadata.tactile_points_local,
             self._tactile_points_local,
-            expand=(self._n_tactile_points, 3),
-        )
-        self._shared_metadata.n_tactile_points = concat_with_tensor(
-            self._shared_metadata.n_tactile_points,
-            torch.tensor([self._n_tactile_points], dtype=gs.tc_int, device=gs.device),
-            expand=(1,),
-        )
+        ])
+        self._shared_metadata.n_tactile_points.append(self._n_tactile_points)
 
         # Store indenter link index
-        entity = self._shared_metadata.solver.entities[self._options.indenter_entity_idx]
-        indenter_link_idx = self._options.indenter_link_idx_local + entity.link_start
-        self._shared_metadata.indenter_links_idx = concat_with_tensor(
-            self._shared_metadata.indenter_links_idx,
-            torch.tensor([indenter_link_idx], dtype=gs.tc_int, device=gs.device),
-            expand=(1,),
-        )
+        indenter_entity = self._shared_metadata.solver.entities[self._options.indenter_entity_idx]
+        indenter_link_idx = self._options.indenter_link_idx_local + indenter_entity.link_start
+        self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
 
         # Store force parameters
-        self._shared_metadata.kn = concat_with_tensor(
-            self._shared_metadata.kn, torch.tensor([[self._options.kn]], device=gs.device), expand=(1, 1)
-        )
-        self._shared_metadata.kt = concat_with_tensor(
-            self._shared_metadata.kt, torch.tensor([[self._options.kt]], device=gs.device), expand=(1, 1)
-        )
-        self._shared_metadata.mu = concat_with_tensor(
-            self._shared_metadata.mu, torch.tensor([[self._options.mu]], device=gs.device), expand=(1, 1)
-        )
-        self._shared_metadata.damping = concat_with_tensor(
-            self._shared_metadata.damping, torch.tensor([[self._options.damping]], device=gs.device), expand=(1, 1)
-        )
+        self._shared_metadata.kn = torch.cat([
+            self._shared_metadata.kn,
+            torch.tensor([[self._options.kn]], dtype=gs.tc_float, device=gs.device)
+        ])
+        self._shared_metadata.kt = torch.cat([
+            self._shared_metadata.kt,
+            torch.tensor([[self._options.kt]], dtype=gs.tc_float, device=gs.device)
+        ])
+        self._shared_metadata.mu = torch.cat([
+            self._shared_metadata.mu,
+            torch.tensor([[self._options.mu]], dtype=gs.tc_float, device=gs.device)
+        ])
+        self._shared_metadata.damping = torch.cat([
+            self._shared_metadata.damping,
+            torch.tensor([[self._options.damping]], dtype=gs.tc_float, device=gs.device)
+        ])
 
         # Store indenter geometry (for Genesis SDF)
         # All sensors share the same indenter geometry
@@ -327,15 +230,20 @@ class TactileFieldSensor(
         """
         n_sensors = len(self._shared_metadata.links_idx)
 
+        # Convert lists to tensors for indexing
+        n_tactile_points_tensor = torch.tensor(self._shared_metadata.n_tactile_points, dtype=gs.tc_int, device=gs.device)
+        links_idx_tensor = torch.tensor(self._shared_metadata.links_idx, dtype=gs.tc_int, device=gs.device)
+        indenter_links_idx_tensor = torch.tensor(self._shared_metadata.indenter_links_idx, dtype=gs.tc_int, device=gs.device)
+
         # Create mapping: point index -> sensor index
         point_to_sensor = torch.repeat_interleave(
             torch.arange(n_sensors, device=gs.device, dtype=gs.tc_int),
-            self._shared_metadata.n_tactile_points
+            n_tactile_points_tensor
         )  # (total_points,)
 
         # Get sensor link indices for each point
-        sensor_link_indices = self._shared_metadata.links_idx[point_to_sensor]  # (total_points,)
-        indenter_link_indices = self._shared_metadata.indenter_links_idx[point_to_sensor]  # (total_points,)
+        sensor_link_indices = links_idx_tensor[point_to_sensor]  # (total_points,)
+        indenter_link_indices = indenter_links_idx_tensor[point_to_sensor]  # (total_points,)
 
         # Get kn for each point
         kn_per_point = self._shared_metadata.kn[point_to_sensor, 0]  # (total_points,)
@@ -419,6 +327,9 @@ class TactileFieldSensor(
         # Return 3 force components per tactile point
         return (self._n_tactile_points * 3,)
 
+    def _get_cache_length(self) -> int:
+        return 1
+
     @classmethod
     def _get_cache_dtype(cls) -> torch.dtype:
         return gs.tc_float
@@ -451,9 +362,9 @@ class TactileFieldSensor(
         if n_sensors == 0:
             return
 
-        # Get all link poses at once
-        links_pos = shared_metadata.solver.get_links_pos()  # (B, L, 3) or (L, 3)
-        links_quat = shared_metadata.solver.get_links_quat()  # (B, L, 4) or (L, 4)
+        # Get all link poses at once (unsafe=True to get all links without validation)
+        links_pos = shared_metadata.solver.get_links_pos(unsafe=True)  # (B, L, 3) or (L, 3)
+        links_quat = shared_metadata.solver.get_links_quat(unsafe=True)  # (B, L, 4) or (L, 4)
 
         # Use precomputed mappings (cached at build time)
         sensor_link_indices = shared_metadata.precomputed_sensor_link_indices  # (total_points,)
@@ -603,8 +514,8 @@ class TactileFieldSensor(
         Transform tactile points from link local frame to world frame.
         """
         # Get link pose
-        links_pos = solver.get_links_pos()
-        links_quat = solver.get_links_quat()
+        links_pos = solver.get_links_pos(unsafe=True)
+        links_quat = solver.get_links_quat(unsafe=True)
 
         if n_envs == 1 and links_pos.dim() == 2:
             # Non-batched: add batch dimension
@@ -649,8 +560,8 @@ class TactileFieldSensor(
         forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)  # (B, total_points, 3)
 
         # Get all link poses
-        links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
-        links_quat = solver.get_links_quat()  # (B, L, 4) or (L, 4)
+        links_pos = solver.get_links_pos(unsafe=True)  # (B, L, 3) or (L, 3)
+        links_quat = solver.get_links_quat(unsafe=True)  # (B, L, 4) or (L, 4)
 
         # Get indenter poses for each point
         if n_envs == 1 and links_pos.dim() == 2:
@@ -737,45 +648,11 @@ class TactileFieldSensor(
         shared_cache: torch.Tensor,
         buffered_data: "TensorRingBuffer",
     ):
+        """
+        Update the shared sensor cache for all tactile field sensors.
+
+        For now, we simply apply the delay and copy ground truth to cache.
+        Noise models can be added later if needed.
+        """
         buffered_data.append(shared_ground_truth_cache)
         cls._apply_delay_to_shared_cache(shared_metadata, shared_cache, buffered_data)
-        cls._add_noise_drift_bias(shared_metadata, shared_cache)
-        cls._quantize_to_resolution(shared_metadata.resolution, shared_cache)
-
-    def _draw_debug(self, context: "RasterizerContext", buffer_updates: dict[str, np.ndarray]):
-        """
-        Draw debug visualization of tactile points and forces.
-        """
-        if not self._options.draw_debug:
-            return
-
-        env_idx = context.rendered_envs_idx[0] if self._manager._sim.n_envs > 0 else 0
-
-        # Get link pose
-        link_pos = self._link.get_pos(envs_idx=env_idx if self._manager._sim.n_envs > 0 else None)
-        link_quat = self._link.get_quat(envs_idx=env_idx if self._manager._sim.n_envs > 0 else None)
-
-        if link_pos.dim() > 1:
-            link_pos = link_pos.squeeze(0)
-            link_quat = link_quat.squeeze(0)
-
-        # Get force readings
-        forces_flat = self.read(envs_idx=env_idx if self._manager._sim.n_envs > 0 else None)
-        if forces_flat.dim() > 1:
-            forces_flat = forces_flat.squeeze(0)
-        forces = forces_flat.reshape(self._n_tactile_points, 3)
-
-        # Transform tactile points to world and draw
-        for i in range(self._n_tactile_points):
-            point_local = self._tactile_points_local[i]
-            point_world = link_pos + transform_by_quat(point_local.unsqueeze(0), link_quat.unsqueeze(0)).squeeze(0)
-
-            # Draw sphere at tactile point (color based on force magnitude)
-            force_mag = torch.norm(forces[i]).item()
-            color = (min(force_mag / 10.0, 1.0), 1.0 - min(force_mag / 10.0, 1.0), 0.0, 0.7)
-
-            context.draw_debug_sphere(
-                pos=point_world.cpu().numpy(),
-                radius=0.002,
-                color=color
-            )
