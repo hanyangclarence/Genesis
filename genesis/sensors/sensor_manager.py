@@ -72,13 +72,13 @@ class SensorManager:
             dtype = sensor_cls._get_cache_dtype()
             cache_slice = self._cache_slices_by_type[sensor_cls]
             sensor_cls._update_shared_ground_truth_cache(
-                self._sensors_metadata[sensor_cls], self._ground_truth_cache[dtype][cache_slice]
+                self._sensors_metadata[sensor_cls], self._ground_truth_cache[dtype][:, cache_slice]
             )
             sensor_cls._update_shared_cache(
                 self._sensors_metadata[sensor_cls],
-                self._ground_truth_cache[dtype][cache_slice],
-                self._cache[dtype][cache_slice],
-                self._buffered_data[dtype][cache_slice],
+                self._ground_truth_cache[dtype][:, cache_slice],
+                self._cache[dtype][:, cache_slice],
+                self._buffered_data[dtype][:, cache_slice],
             )
 
     def get_cloned_from_cache(self, sensor: "Sensor", is_ground_truth: bool = False) -> torch.Tensor:
