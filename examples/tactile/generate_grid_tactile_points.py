@@ -290,6 +290,12 @@ def main():
     parser.add_argument("--palm-facing-angle", type=float, default=180.0,
                         help="Palm-facing direction angle in degrees (rotation around Z-axis). "
                              "0=+X, 90=+Y, 180=-X, 270=-Y. Default: 180 (-X direction)")
+    parser.add_argument("--z-min", type=float, default=None,
+                        help="Minimum Z height in link's local coordinate (meters). "
+                             "Only generate tactile points above this height.")
+    parser.add_argument("--z-max", type=float, default=None,
+                        help="Maximum Z height in link's local coordinate (meters). "
+                             "Only generate tactile points below this height.")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -302,6 +308,10 @@ def main():
         print(f"Grid size: {args.grid_rows} rows × {args.grid_cols} columns")
     print(f"Dense sampling: {args.dense_samples} points per geom")
     print(f"Palm threshold: {args.palm_threshold} (more negative = stricter)")
+    if args.z_min is not None or args.z_max is not None:
+        z_min_str = f"{args.z_min:.4f}" if args.z_min is not None else "-inf"
+        z_max_str = f"{args.z_max:.4f}" if args.z_max is not None else "+inf"
+        print(f"Z-height range (link local): [{z_min_str}, {z_max_str}] meters")
 
     np.random.seed(args.seed)
 
@@ -347,6 +357,8 @@ def main():
         'grid_spacing': args.grid_spacing,
         'grid_rows': args.grid_rows if args.grid_spacing is None else None,
         'grid_cols': args.grid_cols if args.grid_spacing is None else None,
+        'z_min': args.z_min,
+        'z_max': args.z_max,
         'links': {}
     }
 
@@ -439,6 +451,19 @@ def main():
                 )
 
             print(f"    → Grid selected: {len(grid_points)} points")
+
+            # Apply Z-height filtering if specified
+            if args.z_min is not None or args.z_max is not None:
+                z_mask = np.ones(len(grid_points), dtype=bool)
+                if args.z_min is not None:
+                    z_mask &= (grid_points[:, 2] >= args.z_min)
+                if args.z_max is not None:
+                    z_mask &= (grid_points[:, 2] <= args.z_max)
+
+                grid_points = grid_points[z_mask]
+                grid_normals = grid_normals[z_mask]
+
+                print(f"    → After Z-filter [{args.z_min}, {args.z_max}]: {len(grid_points)} points")
 
             # Store points
             import torch
