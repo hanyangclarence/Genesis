@@ -23,22 +23,27 @@ link_yz_offsets = {
     "finger1_link2": (0.05, 0.05),
     "finger1_link3": (0.05, 0.08),
     "finger1_link4": (0.05, 0.11),
+    "finger1_tip_link": (0.05, 0.14),
     "finger2_link1": (0.02, 0.06),
     "finger2_link2": (0.02, 0.10),
     "finger2_link3": (0.02, 0.14),
     "finger2_link4": (0.02, 0.18),
+    "finger2_tip_link": (0.02, 0.21),
     "finger3_link1": (0.0, 0.06),
     "finger3_link2": (0.0, 0.10),
     "finger3_link3": (0.0, 0.14),
     "finger3_link4": (0.0, 0.18),
+    "finger3_tip_link": (0.0, 0.21),
     "finger4_link1": (-0.02, 0.06),
     "finger4_link2": (-0.02, 0.10),
     "finger4_link3": (-0.02, 0.14),
     "finger4_link4": (-0.02, 0.18),
+    "finger4_tip_link": (-0.02, 0.21),
     "finger5_link1": (-0.04, 0.04),
     "finger5_link2": (-0.04, 0.08),
     "finger5_link3": (-0.04, 0.12),
     "finger5_link4": (-0.04, 0.16),
+    "finger5_tip_link": (-0.04, 0.19),
 }
 
 
@@ -97,7 +102,7 @@ def main():
     wuji_hand = scene.add_entity(
         gs.morphs.URDF(
             file="assets/wujihand-urdf/urdf/right.urdf",
-            merge_fixed_links=True,
+            merge_fixed_links=False,
             fixed=True,
             pos=(0, 0.1, 0.1),
             euler=(90, 0, 0),

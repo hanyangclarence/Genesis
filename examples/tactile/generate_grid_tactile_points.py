@@ -330,7 +330,7 @@ def main():
     hand = scene.add_entity(
         gs.morphs.URDF(
             file="assets/wujihand-urdf/urdf/right.urdf",
-            merge_fixed_links=True,
+            merge_fixed_links=False,
             fixed=True,
             pos=(0, 0, 0.1),
             euler=(90, 0, 0),
