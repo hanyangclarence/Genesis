@@ -35,20 +35,23 @@ def merge_grids(input_files, output_file):
 
         # Merge links
         for link_name, link_data in data.get("links", {}).items():
-            if link_name in merged_data["links"]:
-                print(f"  Warning: Link '{link_name}' already exists, skipping from {input_file}")
-                continue
-
             # Extract only local coordinates as a list of 3D points
             simplified_points = []
             for point in link_data.get("points", []):
                 simplified_points.append(point["local"])
 
-            merged_data["links"][link_name] = {
-                "link_idx_local": link_data.get("link_idx_local"),
-                "points": simplified_points,
-                "num_points": len(simplified_points)
-            }
+            if link_name in merged_data["links"]:
+                print(f"  Warning: Link '{link_name}' already exists")
+                assert merged_data["links"][link_name]["link_idx_local"] == link_data.get("link_idx_local"), \
+                    f"Link index mismatch for '{link_name}'"
+                merged_data["links"][link_name]["points"].extend(simplified_points)
+                merged_data["links"][link_name]["num_points"] += len(simplified_points)
+            else:
+                merged_data["links"][link_name] = {
+                    "link_idx_local": link_data.get("link_idx_local"),
+                    "points": simplified_points,
+                    "num_points": len(simplified_points)
+                }
 
             total_points += len(simplified_points)
             print(f"  Added {link_name}: {len(simplified_points)} points")

@@ -17,3 +17,16 @@ python examples/tactile/generate_grid_tactile_points.py --grid-spacing 0.01 --ou
 
 python examples/tactile/merge_tactile_grids.py palm.json fingers2.json fingers3.json fingers2_5.json -o out.json
 ```
+
+# Generate dense finger tactile
+```
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing 0.004 --output fingertip_back.json --dense-samples 200000 --links finger2_tip_link,finger2_link2,finger2_link3,finger3_tip_link,finger3_link2,finger3_link3,finger4_tip_link,finger4_link2,finger4_link3,finger5_tip_link,finger5_link2,finger5_link3,finger1_tip_link,finger1_link2,finger1_link3 --palm-facing-angle 0 --palm-threshold -0.3
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing 0.004 --output fingertip.json --dense-samples 200000 --links finger2_tip_link,finger2_link2,finger2_link3,finger3_tip_link,finger3_link2,finger3_link3,finger4_tip_link,finger4_link2,finger4_link3,finger5_tip_link,finger5_link2,finger5_link3,finger1_tip_link,finger1_link2,finger1_link3 --palm-threshold -0.3
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing 0.004 --output fingertip_2.json --dense-samples 200000 --links finger1_link4 --palm-threshold -0.3 --z-min 0.002 --z-max 0.012
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing 0.004 --output fingertip_2_back.json --dense-samples 200000 --links finger1_link4 --palm-threshold -0.3 --z-min 0.002 --z-max 0.012 --palm-facing-angle 0
+
+python examples/tactile/merge_tactile_grids.py fingertip.json fingertip_2.json fingertip_back.json fingertip_2_back.json -o out.json
+```

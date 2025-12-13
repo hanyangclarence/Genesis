@@ -175,7 +175,7 @@ def select_grid_points(points, normals, grid_spacing=0.01, num_rows=None, num_co
     points_2d = points_pca[:, :2]
 
     # Find bounds with small margin (10% on each side)
-    margin = 0.1
+    margin = 0.0
     min_2d = points_2d.min(axis=0)
     max_2d = points_2d.max(axis=0)
     range_2d = max_2d - min_2d
