@@ -22,8 +22,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend for headless
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
@@ -68,10 +66,10 @@ def main():
                         help="Path to tactile grid JSON file")
     parser.add_argument("--sensor-links", type=str, default=None,
                         help="Comma-separated list of link names to add tactile sensors to (default: all links in grid file)")
-    parser.add_argument("-v", "--visualize", action="store_true", default=False,
-                        help="Show visualization GUI")
-    parser.add_argument("-nv", "--no-visualize", action="store_false", dest="visualize",
-                        help="Disable visualization GUI")
+    parser.add_argument("--visualize", action="store_true", default=True,
+                        help="Show force magnitude visualization")
+    parser.add_argument("--no-visualize", action="store_false", dest="visualize",
+                        help="Disable force visualization")
     parser.add_argument("--kn", type=float, default=2000.0,
                         help="Normal stiffness coefficient")
     parser.add_argument("--save-video", type=str, default=None,
@@ -323,6 +321,8 @@ def main():
 
     def update_visualization():
         """Update force magnitude visualization."""
+        if not args.visualize:
+            return 0.0
         max_force_global = 0.0
         for link_name in sensor_link_names:
             sensor = sensors[link_name]
@@ -340,9 +340,8 @@ def main():
 
             # Update scatter plot colors if visualizing
             force_mag_np = force_magnitudes.cpu().numpy()
-            if args.visualize and link_name in scatter_plots:
-                scatter, offset_positions = scatter_plots[link_name]
-                scatter.set_array(force_mag_np)
+            scatter, offset_positions = scatter_plots[link_name]
+            scatter.set_array(force_mag_np)
 
             # Track max force for global scaling
             max_force_global = max(max_force_global, force_mag_np.max())
@@ -352,13 +351,11 @@ def main():
                 force_field_frames[link_name].append(force_field_3d.cpu().numpy())
 
         # Auto-scale colorbar globally
-        if args.visualize:
-            vmax = max(max_force_global, 1.0)
-            for link_name in sensor_link_names:
-                if link_name in scatter_plots:
-                    scatter, _ = scatter_plots[link_name]
-                    scatter.set_clim(vmin=0, vmax=vmax)
-            plt.pause(0.001)
+        vmax = max(max_force_global, 1.0)
+        for link_name in sensor_link_names:
+            scatter, _ = scatter_plots[link_name]
+            scatter.set_clim(vmin=0, vmax=vmax)
+        plt.pause(0.001)
 
         return max_force_global
 
@@ -501,54 +498,14 @@ def main():
 
         # Save video - try multiple writers
         print(f"Saving video to: {args.save_video}")
-        saved = False
+        Writer = animation.writers['ffmpeg']
+        writer = Writer(fps=30, metadata=dict(artist='Genesis'), bitrate=3600)
+        anim.save(args.save_video, writer=writer)
 
-        # Try ffmpeg first
-        if not saved and 'ffmpeg' in animation.writers.list():
-            try:
-                Writer = animation.writers['ffmpeg']
-                writer = Writer(fps=30, metadata=dict(artist='Genesis'), bitrate=3600)
-                anim.save(args.save_video, writer=writer)
-                saved = True
-                print(f"Video saved with ffmpeg: {args.save_video}")
-            except Exception as e:
-                print(f"ffmpeg failed: {e}")
-
-        # Try pillow (for gif)
-        if not saved:
-            try:
-                gif_path = args.save_video.replace('.mp4', '.gif')
-                anim.save(gif_path, writer='pillow', fps=20)
-                saved = True
-                print(f"Video saved as GIF with pillow: {gif_path}")
-            except Exception as e:
-                print(f"pillow failed: {e}")
-
-        # Try saving individual frames as images
-        if not saved:
-            try:
-                import os
-                frames_dir = args.save_video.replace('.mp4', '_frames')
-                os.makedirs(frames_dir, exist_ok=True)
-                print(f"Saving individual frames to: {frames_dir}/")
-                for i in range(num_frames):
-                    update(i)
-                    fig_vid.savefig(f"{frames_dir}/frame_{i:04d}.png", dpi=100)
-                saved = True
-                print(f"Saved {num_frames} frames to {frames_dir}/")
-                print("To convert to video: ffmpeg -framerate 30 -i frame_%04d.png -c:v libx264 output.mp4")
-            except Exception as e:
-                print(f"Frame saving failed: {e}")
-
-        if saved:
-            print(f"  - Frames: {num_frames}")
-            print(f"  - Max force magnitude: {max_force_all:.2f} N")
-        else:
-            print("ERROR: Could not save video with any available method")
-
+        print(f"✓ Video saved successfully: {args.save_video}")
         plt.close(fig_vid)
 
-    if args.visualize and fig is not None:
+    if args.visualize:
         plt.show()
 
     print(f"\n{'='*70}")
