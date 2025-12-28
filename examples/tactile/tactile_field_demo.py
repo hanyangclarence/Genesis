@@ -1,8 +1,13 @@
 """
-TactileFieldSensor Demo for Genesis v0.3.10
+TactileField3DSensor Demo for Genesis v0.3.10
 
-This script demonstrates the TactileFieldSensor, which computes dense tactile
-force fields using SDF-based penetration depth queries.
+This script demonstrates the TactileField3DSensor, which computes dense tactile
+force fields using SDF-based penetration depth queries. The 3D sensor includes
+both normal forces and tangential friction forces following TacSL's approach.
+
+Friction model:
+- Normal force: fn = kn * depth
+- Tangential friction: ft = min(kt * v_tangential, mu * fn)
 
 Supports headless operation with video saving capabilities.
 
@@ -12,6 +17,9 @@ Usage:
 
     # Headless with video outputs
     python tactile_field_demo.py --no-visualize --save-video tactile.mp4 --save-render scene.mp4
+
+    # With custom friction parameters
+    python tactile_field_demo.py --visualize --kn 2000 --kt 100 --mu 0.5
 """
 import argparse
 import numpy as np
@@ -37,7 +45,11 @@ def main():
                         help="Indenter size (radius for sphere, side length for cube)")
     parser.add_argument("--kn", type=float, default=2000.0,
                         help="Normal stiffness coefficient")
-    parser.add_argument("--num-steps", type=int, default=100,
+    parser.add_argument("--kt", type=float, default=100.0,
+                        help="Tangential stiffness coefficient (viscous friction)")
+    parser.add_argument("--mu", type=float, default=0.5,
+                        help="Coulomb friction coefficient")
+    parser.add_argument("--num-steps", type=int, default=300,
                         help="Number of simulation steps")
     parser.add_argument("--save-video", type=str, default=None,
                         help="Path to save tactile force field video (e.g., tactile.mp4)")
@@ -69,6 +81,7 @@ def main():
         rigid_options=gs.options.RigidOptions(
             enable_collision=True,
             constraint_timeconst=0.01,
+            gravity=(0, 0, -9.81),
         ),
         vis_options=gs.options.VisOptions(
             show_world_frame=True,
@@ -88,13 +101,14 @@ def main():
         gs.morphs.Box(
             size=(0.1, 0.1, 0.02),
             pos=(0.0, 0.0, 0.05),
+            euler=(0.0, -20.0, 0.0),
             fixed=True,
         ),
     )
     gs.logger.info("Sensor pad added (fixed box)")
 
     # Add an indenter (the object that will contact the sensor)
-    drop_height = 0.15
+    drop_height = 0.11
     if args.shape == "sphere":
         indenter = scene.add_entity(
             gs.morphs.Sphere(
@@ -108,6 +122,7 @@ def main():
             gs.morphs.Box(
                 size=(args.size, args.size, args.size),
                 pos=(0.0, 0.0, drop_height),
+                euler=(0.0, -20.0, 0.0),
             ),
         )
         gs.logger.info(f"Created cube indenter (size={args.size}m) at height {drop_height}m")
@@ -123,21 +138,24 @@ def main():
     tactile_points = np.stack([xv.flatten(), yv.flatten(), z.flatten()], axis=-1).astype(np.float32)
 
     print(f"\n{'='*60}")
-    print(f"Creating TactileFieldSensor with {len(tactile_points)} tactile points ({num_rows}x{num_cols})")
+    print(f"Creating TactileField3DSensor with {len(tactile_points)} tactile points ({num_rows}x{num_cols})")
+    print(f"Force parameters: kn={args.kn}, kt={args.kt}, mu={args.mu}")
     print(f"{'='*60}")
 
-    # Add TactileFieldSensor
+    # Add TactileField3DSensor (includes normal + tangential friction forces)
     tactile_sensor = scene.add_sensor(
-        gs.sensors.TactileField(
+        gs.sensors.TactileField3D(
             entity_idx=sensor_pad.idx,
             link_idx_local=0,
             indenter_entity_idx=indenter.idx,
             indenter_link_idx_local=0,
             tactile_points_local=tactile_points,
             kn=args.kn,
+            kt=args.kt,
+            mu=args.mu,
         )
     )
-    gs.logger.info(f"TactileFieldSensor added with {len(tactile_points)} tactile points")
+    gs.logger.info(f"TactileField3DSensor added with {len(tactile_points)} tactile points")
 
     # Add camera for rendering if requested (must be before scene.build())
     cam = None
@@ -172,8 +190,20 @@ def main():
     print(f"Running simulation for {args.num_steps} steps...")
     print(f"{'='*60}")
 
+    obj_mass = indenter.get_mass()
+    external_force = torch.tensor([0.0, obj_mass * 9.81, -obj_mass * 9.81 * 5.0], dtype=torch.float32) * 5.0
+
     max_force_seen = 0.0
     for step in range(args.num_steps):
+        if step == 100:
+            print("Here")
+
+        scene.rigid_solver.apply_links_external_force(
+            force=external_force,
+            links_idx=indenter.links[0].idx,
+            ref="link_com"
+        )
+
         scene.step()
 
         # Render camera frame if recording
@@ -185,6 +215,9 @@ def main():
 
         # Reshape to (num_rows, num_cols, 3) for analysis
         force_field_3d = force_field.reshape(num_rows, num_cols, 3)
+
+        force_flat_3d = force_field.reshape(-1, 3)
+        print(force_flat_3d.max(dim=0))
 
         # Store for video
         if args.save_video:
@@ -250,7 +283,7 @@ def main():
             max_force_all = 1.0  # Avoid division by zero
 
         # Scaling factor for arrow length
-        arrow_scale = 0.01 / (max_force_all + 1e-6)  # Scale so max arrow is ~1cm
+        arrow_scale = 0.1 / (max_force_all + 1e-6)  # Scale so max arrow is ~1cm
 
         print(f"Max force magnitude: {max_force_all:.2f} N")
         print(f"Arrow scale factor: {arrow_scale:.6f}")

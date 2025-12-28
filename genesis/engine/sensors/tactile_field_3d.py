@@ -35,15 +35,15 @@ if TYPE_CHECKING:
 
 # ==================== Sensor Options ====================
 # Import the options class from the central options module
-from genesis.options.sensors import TactileField as TactileFieldSensorOptions
+from genesis.options.sensors import TactileField3D as TactileField3DSensorOptions
 
 
 # ==================== Sensor Metadata ====================
 
 @dataclass
-class TactileFieldSensorMetadata(SharedSensorMetadata):
+class TactileField3DSensorMetadata(SharedSensorMetadata):
     """
-    Shared metadata for all tactile field sensors.
+    Shared metadata for all 3D tactile field sensors (with friction forces).
     """
     # Solver reference
     solver: "RigidSolver | None" = None
@@ -80,26 +80,35 @@ class TactileFieldSensorMetadata(SharedSensorMetadata):
     precomputed_sensor_link_indices: torch.Tensor = None  # (total_points,) - sensor link idx for each point
     precomputed_indenter_link_indices: torch.Tensor = None  # (total_points,) - indenter link idx for each point
     precomputed_kn_per_point: torch.Tensor = None  # (total_points,) - kn value for each point
+    precomputed_kt_per_point: torch.Tensor = None  # (total_points,) - kt value for each point
+    precomputed_mu_per_point: torch.Tensor = None  # (total_points,) - mu value for each point
 
 
 # ==================== Sensor Class ====================
 
-@register_sensor(TactileFieldSensorOptions, TactileFieldSensorMetadata, tuple)
+@register_sensor(TactileField3DSensorOptions, TactileField3DSensorMetadata, tuple)
 @ti.data_oriented
-class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
+class TactileField3DSensor(Sensor[TactileField3DSensorMetadata]):
     """
-    Dense tactile force field sensor using SDF-based penetration depth computation.
+    Dense tactile force field sensor with both normal and tangential (friction) forces.
+
+    Forces are returned in the sensor's local coordinate frame.
 
     Follows TacSL's approach:
     1. Generate tactile point grid on elastomer surface
     2. Build SDF of indenter mesh
     3. Query penetration depth at each tactile point
-    4. Compute forces using penalty method: F = kn * depth
+    4. Compute normal forces using penalty method: fn = kn * depth
+    5. Compute tangential friction forces using simplified Coulomb model:
+       - ft_static = kt * |v_tangential| (viscous friction)
+       - ft_dynamic = mu * fn (Coulomb friction limit)
+       - ft = min(ft_static, ft_dynamic)
+    6. Transform forces from world frame to sensor local frame
     """
 
     def __init__(
         self,
-        sensor_options: TactileFieldSensorOptions,
+        sensor_options: TactileField3DSensorOptions,
         sensor_idx: int,
         data_cls: Type[tuple],
         sensor_manager: "SensorManager",
@@ -191,7 +200,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             self._shared_metadata.indenter_mesh_bbox_upper = bbox_upper
 
             gs.logger.info(
-                f"[TactileFieldSensor] Mesh bbox: "
+                f"[TactileField3DSensor] Mesh bbox: "
                 f"lower={bbox_lower.cpu().numpy()}, upper={bbox_upper.cpu().numpy()}"
             )
 
@@ -227,16 +236,20 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         sensor_link_indices = links_idx_tensor[point_to_sensor]  # (total_points,)
         indenter_link_indices = indenter_links_idx_tensor[point_to_sensor]  # (total_points,)
 
-        # Get kn for each point
+        # Get force parameters for each point
         kn_per_point = self._shared_metadata.kn[point_to_sensor, 0]  # (total_points,)
+        kt_per_point = self._shared_metadata.kt[point_to_sensor, 0]  # (total_points,)
+        mu_per_point = self._shared_metadata.mu[point_to_sensor, 0]  # (total_points,)
 
         # Store precomputed mappings
         self._shared_metadata.precomputed_sensor_link_indices = sensor_link_indices
         self._shared_metadata.precomputed_indenter_link_indices = indenter_link_indices
         self._shared_metadata.precomputed_kn_per_point = kn_per_point
+        self._shared_metadata.precomputed_kt_per_point = kt_per_point
+        self._shared_metadata.precomputed_mu_per_point = mu_per_point
 
         gs.logger.debug(
-            f"[TactileFieldSensor] Precomputed mappings for {n_sensors} sensors, "
+            f"[TactileField3DSensor] Precomputed mappings for {n_sensors} sensors, "
             f"{len(sensor_link_indices)} total tactile points"
         )
 
@@ -253,7 +266,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             self._tactile_points_local = torch.tensor(points, dtype=gs.tc_float, device=gs.device)
 
             gs.logger.info(
-                f"[TactileFieldSensor] Using {self._n_tactile_points} custom tactile points"
+                f"[TactileField3DSensor] Using {self._n_tactile_points} custom tactile points"
             )
             return
 
@@ -279,7 +292,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         self._tactile_points_local = torch.tensor(points, dtype=gs.tc_float, device=gs.device)
 
         gs.logger.info(
-            f"[TactileFieldSensor] Generated {self._n_tactile_points} tactile points "
+            f"[TactileField3DSensor] Generated {self._n_tactile_points} tactile points "
             f"({num_rows}x{num_cols}) on surface ({width:.3f}m x {height:.3f}m)"
         )
 
@@ -298,7 +311,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         self._indenter_geom = indenter_link.geoms[0]
 
         gs.logger.info(
-            f"[TactileFieldSensor] Using Genesis precomputed SDF for indenter geometry "
+            f"[TactileField3DSensor] Using Genesis precomputed SDF for indenter geometry "
             f"(idx={self._indenter_geom.idx}, res={self._indenter_geom.sdf_res}, "
             f"cell_size={self._indenter_geom.sdf_cell_size:.6f}m)"
         )
@@ -313,7 +326,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
     @classmethod
     def _update_shared_ground_truth_cache(
-        cls, shared_metadata: TactileFieldSensorMetadata, shared_ground_truth_cache: torch.Tensor
+        cls, shared_metadata: TactileField3DSensorMetadata, shared_ground_truth_cache: torch.Tensor
     ):
         """
         Compute tactile force field using SDF-based penetration depth.
@@ -347,6 +360,8 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         sensor_link_indices = shared_metadata.precomputed_sensor_link_indices  # (total_points,)
         indenter_link_indices = shared_metadata.precomputed_indenter_link_indices  # (total_points,)
         kn_per_point = shared_metadata.precomputed_kn_per_point  # (total_points,)
+        kt_per_point = shared_metadata.precomputed_kt_per_point  # (total_points,)
+        mu_per_point = shared_metadata.precomputed_mu_per_point  # (total_points,)
 
         # All tactile points in local frame (already stored contiguously)
         all_tactile_points_local = shared_metadata.tactile_points_local  # (total_points, 3)
@@ -370,13 +385,17 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Single batched transform for ALL points: p_world = link_pos + quat_rotate(link_quat, p_local)
         all_tactile_points_world = point_link_pos + transform_by_quat(all_tactile_points_local_batched, point_link_quat)  # (B, total_points, 3)
 
-        # Compute forces for ALL points in one pass
+        # Compute forces for ALL points in one pass (including tangential friction)
         all_forces = cls._compute_sdf_based_forces_batched(
             shared_metadata,
             all_tactile_points_world,
+            all_tactile_points_local_batched,
+            point_link_quat,
             sensor_link_indices,
             indenter_link_indices,
             kn_per_point,
+            kt_per_point,
+            mu_per_point,
             n_envs
         )  # (B, total_points, 3)
 
@@ -515,22 +534,28 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
     @classmethod
     def _compute_sdf_based_forces_batched(cls, shared_metadata, tactile_points_world,
+                                          tactile_points_local_batched, sensor_link_quat,
                                           sensor_link_indices, indenter_link_indices,
-                                          kn_per_point, n_envs):
+                                          kn_per_point, kt_per_point, mu_per_point, n_envs):
         """
         Compute forces using Genesis's precomputed SDF for ALL tactile points at once.
+        Includes both normal forces and tangential friction forces following TacSL's approach.
 
         This batched version processes all tactile points from all sensors in a single pass.
 
         Args:
             tactile_points_world: (B, total_points, 3) - ALL tactile points in world frame
+            tactile_points_local_batched: (B, total_points, 3) - ALL tactile points in local frame
+            sensor_link_quat: (B, total_points, 4) - Sensor link quaternion for each point
             sensor_link_indices: (total_points,) - Sensor link index for each point
             indenter_link_indices: (total_points,) - Indenter link index for each point
             kn_per_point: (total_points,) - Normal stiffness for each point
+            kt_per_point: (total_points,) - Tangential stiffness for each point
+            mu_per_point: (total_points,) - Friction coefficient for each point
             n_envs: int - Number of environments
 
         Returns:
-            forces: (B, total_points, 3) - Force vectors at each tactile point
+            forces: (B, total_points, 3) - Force vectors at each tactile point in sensor local frame
         """
         solver = shared_metadata.solver
         total_points = tactile_points_world.shape[1]
@@ -539,6 +564,10 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Get all link poses
         links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
         links_quat = solver.get_links_quat()  # (B, L, 4) or (L, 4)
+
+        # Get all link velocities for friction computation
+        links_vel = solver.get_links_vel()  # (B, L, 3) or (L, 3)
+        links_ang = solver.get_links_ang()  # (B, L, 3) or (L, 3)
 
         # Get indenter poses for each point
         if n_envs == 1 and links_pos.dim() == 2:
@@ -549,10 +578,22 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             # Add batch dimension
             indenter_pos = indenter_pos.unsqueeze(0)  # (1, total_points, 3)
             indenter_quat = indenter_quat.unsqueeze(0)  # (1, total_points, 4)
+
+            # Get velocities for friction
+            sensor_linvel = links_vel[sensor_link_indices, :].unsqueeze(0)  # (1, total_points, 3)
+            sensor_angvel = links_ang[sensor_link_indices, :].unsqueeze(0)  # (1, total_points, 3)
+            indenter_linvel = links_vel[indenter_link_indices, :].unsqueeze(0)  # (1, total_points, 3)
+            indenter_angvel = links_ang[indenter_link_indices, :].unsqueeze(0)  # (1, total_points, 3)
         else:
             # Batched case
             indenter_pos = links_pos[:, indenter_link_indices, :]  # (B, total_points, 3)
             indenter_quat = links_quat[:, indenter_link_indices, :]  # (B, total_points, 4)
+
+            # Get velocities for friction
+            sensor_linvel = links_vel[:, sensor_link_indices, :]  # (B, total_points, 3)
+            sensor_angvel = links_ang[:, sensor_link_indices, :]  # (B, total_points, 3)
+            indenter_linvel = links_vel[:, indenter_link_indices, :]  # (B, total_points, 3)
+            indenter_angvel = links_ang[:, indenter_link_indices, :]  # (B, total_points, 3)
 
         # Transform ALL points to their respective indenter frames in one operation
         points_relative = tactile_points_world - indenter_pos  # (B, total_points, 3)
@@ -591,36 +632,87 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Compute penetration and normals
         penetration_depth = -signed_distances  # (B, total_points)
         penetration_mask = penetration_depth > 0  # (B, total_points)
-        sdf_gradients = -sdf_gradients  # Flip gradients to point outward
+        sdf_gradients = -sdf_gradients  # Flip gradients to point inward
 
-        if penetration_mask.any():
-            # Normalize gradients to get normals
-            normals_indenter = sdf_gradients.clone()
-            norms = torch.norm(normals_indenter, dim=2, keepdim=True)
-            normals_indenter = normals_indenter / (norms + 1e-9)
-        else:
-            normals_indenter = sdf_gradients
+        if not penetration_mask.any():
+            return forces  # No penetration, no forces
+
+        # Normalize gradients to get normals in indenter frame
+        normals_indenter = sdf_gradients.clone()
+        norms = torch.norm(normals_indenter, dim=2, keepdim=True)
+        normals_indenter = normals_indenter / (norms + 1e-9)
 
         # Transform normals to world frame (each point has its own indenter quat)
         normals_world = transform_by_quat(normals_indenter, indenter_quat)  # (B, total_points, 3)
 
+        # ==================== Normal Force Computation ====================
         # Compute normal forces (penalty method) - use per-point kn values
         kn_per_point_batched = kn_per_point.unsqueeze(0).expand(n_envs, -1)  # (B, total_points)
-        fc_norm = kn_per_point_batched * penetration_depth  # (B, total_points)
+        fn_norm = kn_per_point_batched * penetration_depth  # (B, total_points)
 
         # Apply forces in normal direction
-        forces_world = fc_norm.unsqueeze(-1) * normals_world  # (B, total_points, 3)
+        fn = fn_norm.unsqueeze(-1) * normals_world  # (B, total_points, 3)
+
+        # ==================== Tangential Friction Force Computation ====================
+        # Following TacSL's approach (tactile_sensor.py:339-396)
+
+        # Compute tactile point velocity in world frame
+        # v_tactile = ω_sensor × r_local_world + v_sensor
+        # where r_local_world is the tactile point position relative to sensor link origin in world frame
+        r_local_world = transform_by_quat(tactile_points_local_batched, sensor_link_quat)  # (B, total_points, 3)
+        tactile_points_linvel = torch.linalg.cross(sensor_angvel, r_local_world) + sensor_linvel  # (B, total_points, 3)
+
+        # Compute closest point position on indenter surface (in indenter frame)
+        # closest_point = tactile_point + depth * normal (in indenter frame)
+        closest_points_indenter = points_indenter_frame + penetration_depth.unsqueeze(-1) * (-normals_indenter)  # (B, total_points, 3)
+
+        # Compute closest point velocity in world frame
+        # v_closest = ω_indenter × r_closest_world + v_indenter
+        r_closest_world = transform_by_quat(closest_points_indenter, indenter_quat)  # (B, total_points, 3)
+        closest_points_linvel = torch.linalg.cross(indenter_angvel, r_closest_world) + indenter_linvel  # (B, total_points, 3)
+
+        # Compute relative velocity
+        relative_linvel = tactile_points_linvel - closest_points_linvel  # (B, total_points, 3)
+
+        # Project out normal component to get tangential velocity
+        # v_tangential = v_relative - normal * (normal · v_relative)
+        normal_component = (normals_world * relative_linvel).sum(dim=-1, keepdim=True)  # (B, total_points, 1)
+        relative_vt = relative_linvel - normals_world * normal_component  # (B, total_points, 3)
+
+        # Compute tangential velocity magnitude
+        relative_vt_norm = relative_vt.norm(dim=-1)  # (B, total_points)
+
+        # Compute friction force using simplified Coulomb friction model
+        # ft_static = kt * |v_tangential| (viscous friction)
+        # ft_dynamic = mu * fn (Coulomb friction limit)
+        # ft = min(ft_static, ft_dynamic)
+        kt_per_point_batched = kt_per_point.unsqueeze(0).expand(n_envs, -1)  # (B, total_points)
+        mu_per_point_batched = mu_per_point.unsqueeze(0).expand(n_envs, -1)  # (B, total_points)
+
+        ft_static_norm = kt_per_point_batched * relative_vt_norm  # (B, total_points)
+        ft_dynamic_norm = mu_per_point_batched * fn_norm  # (B, total_points)
+        ft_norm = torch.minimum(ft_static_norm, ft_dynamic_norm)  # (B, total_points)
+
+        # Apply friction force in opposite direction of tangential velocity
+        # ft = -ft_norm * (v_tangential / |v_tangential|)
+        ft = ft_norm.unsqueeze(-1) * relative_vt / relative_vt_norm.clamp(min=1e-9).unsqueeze(-1)  # (B, total_points, 3)
+
+        # ==================== Total Force ====================
+        tactile_force_world = fn + ft  # (B, total_points, 3)
+
+        # Transform forces from world frame to sensor local frame
+        # Following TacSL's approach: tactile_force_local = quat_apply(quat_conjugate(tactile_points_orn), tactile_force)
+        tactile_force_local = inv_transform_by_quat(tactile_force_world, sensor_link_quat)  # (B, total_points, 3)
 
         # Zero out forces where there's no penetration
-        forces_world = forces_world * penetration_mask.unsqueeze(-1).float()
-        forces = forces_world
+        forces = tactile_force_local * penetration_mask.unsqueeze(-1).float()
 
-        return forces  # (B, total_points, 3)
+        return forces  # (B, total_points, 3) in sensor local frame
 
     @classmethod
     def _update_shared_cache(
         cls,
-        shared_metadata: TactileFieldSensorMetadata,
+        shared_metadata: TactileField3DSensorMetadata,
         shared_ground_truth_cache: torch.Tensor,
         shared_cache: torch.Tensor,
         buffered_data: "TensorRingBuffer",

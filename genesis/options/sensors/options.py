@@ -395,3 +395,90 @@ class TactileField(SensorOptions):
         indenter_entity = scene.entities[self.indenter_entity_idx]
         if not isinstance(indenter_entity, RigidEntity):
             gs.raise_exception(f"Indenter entity at index {self.indenter_entity_idx} is not a RigidEntity")
+
+
+class TactileField3D(SensorOptions):
+    """
+    3D Tactile sensor that returns dense tactile force field including both normal and tangential forces.
+
+    This sensor extends TactileField with friction force computation following TacSL's approach.
+    It computes:
+    - Normal forces: fn = kn * depth
+    - Tangential friction forces using simplified Coulomb friction model
+
+    Parameters
+    ----------
+    entity_idx : int
+        Entity index of the rigid entity with the tactile sensor
+    link_idx_local : int
+        Local link index within the entity (default: 0)
+    num_rows : int
+        Number of tactile points in the first dimension (default: 10)
+    num_cols : int
+        Number of tactile points in the second dimension (default: 10)
+    elastomer_thickness : float
+        Thickness of the elastomer layer in meters (default: 0.005)
+    surface_size : tuple[float, float]
+        Width and height of the tactile surface (default: (0.08, 0.08))
+    tactile_points_local : np.ndarray | None
+        Custom tactile point positions in local frame (N, 3). If provided, overrides num_rows/num_cols/surface_size.
+    indenter_entity_idx : int
+        Entity index of the indenter object (the object making contact)
+    indenter_link_idx_local : int
+        Local link index of the indenter within its entity (default: 0)
+    kn : float
+        Normal stiffness coefficient (default: 1000.0)
+    kt : float
+        Tangential stiffness coefficient for viscous friction (default: 100.0)
+    mu : float
+        Coulomb friction coefficient (default: 0.5)
+    damping : float
+        Contact damping coefficient (default: 0.003)
+    """
+
+    # Sensor attachment
+    entity_idx: int
+    link_idx_local: int = 0
+
+    # Tactile grid configuration
+    num_rows: int = 10
+    num_cols: int = 10
+    elastomer_thickness: float = 0.005
+    surface_size: Tuple2FType = (0.08, 0.08)
+    tactile_points_local: Optional[Any] = None  # np.ndarray of shape (N, 3)
+
+    # Indenter configuration
+    indenter_entity_idx: int = -1
+    indenter_link_idx_local: int = 0
+
+    # Force parameters
+    kn: float = 1000.0  # Normal stiffness
+    kt: float = 100.0   # Tangential stiffness (viscous friction)
+    mu: float = 0.5     # Coulomb friction coefficient
+    damping: float = 0.003
+
+    def validate(self, scene: "Scene"):
+        """Validate sensor options."""
+        from genesis.engine.entities import RigidEntity
+
+        super().validate(scene)
+
+        # Validate sensor entity
+        if self.entity_idx is None or self.entity_idx < 0:
+            gs.raise_exception(f"Invalid entity_idx: {self.entity_idx}")
+        if self.entity_idx >= len(scene.entities):
+            gs.raise_exception(f"entity_idx {self.entity_idx} out of range")
+        entity = scene.entities[self.entity_idx]
+        if not isinstance(entity, RigidEntity):
+            gs.raise_exception(f"Entity at index {self.entity_idx} is not a RigidEntity")
+        if self.link_idx_local < 0 or self.link_idx_local >= entity.n_links:
+            gs.raise_exception(f"Invalid link_idx_local {self.link_idx_local} for entity {self.entity_idx}")
+
+        # Validate indenter entity
+        if self.indenter_entity_idx < 0:
+            gs.raise_exception(f"Invalid indenter_entity_idx: {self.indenter_entity_idx}")
+        if self.indenter_entity_idx >= len(scene.entities):
+            gs.raise_exception(f"indenter_entity_idx {self.indenter_entity_idx} out of range")
+        indenter_entity = scene.entities[self.indenter_entity_idx]
+        if not isinstance(indenter_entity, RigidEntity):
+            gs.raise_exception(f"Indenter entity at index {self.indenter_entity_idx} is not a RigidEntity")
