@@ -5,4 +5,5 @@ from . import raycaster
 from . import depth_camera
 from . import camera
 from . import tactile_field
+from . import tactile_field_3d
 from .sensor_manager import SensorManager

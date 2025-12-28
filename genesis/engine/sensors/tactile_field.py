@@ -374,6 +374,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         all_forces = cls._compute_sdf_based_forces_batched(
             shared_metadata,
             all_tactile_points_world,
+            point_link_quat,
             sensor_link_indices,
             indenter_link_indices,
             kn_per_point,
@@ -515,6 +516,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
     @classmethod
     def _compute_sdf_based_forces_batched(cls, shared_metadata, tactile_points_world,
+                                          sensor_link_quat,
                                           sensor_link_indices, indenter_link_indices,
                                           kn_per_point, n_envs):
         """
@@ -611,11 +613,13 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Apply forces in normal direction
         forces_world = fc_norm.unsqueeze(-1) * normals_world  # (B, total_points, 3)
 
-        # Zero out forces where there's no penetration
-        forces_world = forces_world * penetration_mask.unsqueeze(-1).float()
-        forces = forces_world
+        # Transform forces to sensor link frame
+        forces_local = inv_transform_by_quat(forces_world, sensor_link_quat)  # (B, total_points, 3)
 
-        return forces  # (B, total_points, 3)
+        # Zero out forces where there's no penetration
+        forces_local = forces_local * penetration_mask.unsqueeze(-1).float()
+        
+        return forces_local
 
     @classmethod
     def _update_shared_cache(
