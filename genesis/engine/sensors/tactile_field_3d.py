@@ -317,8 +317,8 @@ class TactileField3DSensor(Sensor[TactileField3DSensorMetadata]):
         )
 
     def _get_return_format(self) -> tuple[int, ...]:
-        # Return 3 force components per tactile point
-        return (self._n_tactile_points * 3,)
+        # Return 5 values per tactile point: 3D force vector + normal magnitude + tangential magnitude
+        return (self._n_tactile_points * 5,)
 
     @classmethod
     def _get_cache_dtype(cls) -> torch.dtype:
@@ -555,11 +555,13 @@ class TactileField3DSensor(Sensor[TactileField3DSensorMetadata]):
             n_envs: int - Number of environments
 
         Returns:
-            forces: (B, total_points, 3) - Force vectors at each tactile point in sensor local frame
+            forces: (B, total_points, 5) - Per-point data: [fx, fy, fz, fn_magnitude, ft_magnitude]
+                    where (fx, fy, fz) is the 3D force vector in sensor local frame,
+                    fn_magnitude is the normal force magnitude, and ft_magnitude is the tangential force magnitude
         """
         solver = shared_metadata.solver
         total_points = tactile_points_world.shape[1]
-        forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)  # (B, total_points, 3)
+        forces = torch.zeros((n_envs, total_points, 5), dtype=gs.tc_float, device=gs.device)  # (B, total_points, 5)
 
         # Get all link poses
         links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
@@ -704,10 +706,19 @@ class TactileField3DSensor(Sensor[TactileField3DSensorMetadata]):
         # Following TacSL's approach: tactile_force_local = quat_apply(quat_conjugate(tactile_points_orn), tactile_force)
         tactile_force_local = inv_transform_by_quat(tactile_force_world, sensor_link_quat)  # (B, total_points, 3)
 
-        # Zero out forces where there's no penetration
-        forces = tactile_force_local * penetration_mask.unsqueeze(-1).float()
+        # Zero out values where there's no penetration
+        force_3d = tactile_force_local * penetration_mask.unsqueeze(-1).float()  # (B, total_points, 3)
+        fn_norm_masked = fn_norm * penetration_mask.float()  # (B, total_points)
+        ft_norm_masked = ft_norm * penetration_mask.float()  # (B, total_points)
 
-        return forces  # (B, total_points, 3) in sensor local frame
+        # Concatenate 3D force with magnitudes: [fx, fy, fz, fn_magnitude, ft_magnitude]
+        forces = torch.cat([
+            - force_3d,                      # (B, total_points, 3)
+            fn_norm_masked.unsqueeze(-1),  # (B, total_points, 1)
+            ft_norm_masked.unsqueeze(-1),  # (B, total_points, 1)
+        ], dim=-1)  # (B, total_points, 5)
+
+        return forces  # (B, total_points, 5) in sensor local frame
 
     @classmethod
     def _update_shared_cache(

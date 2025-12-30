@@ -191,7 +191,7 @@ def main():
     print(f"{'='*60}")
 
     obj_mass = indenter.get_mass()
-    external_force = torch.tensor([0.0, obj_mass * 9.81, -obj_mass * 9.81 * 5.0], dtype=torch.float32) * 5.0
+    external_force = torch.tensor([0.0, 0.0, -obj_mass * 9.81 * 5.0], dtype=torch.float32) * 5.0
 
     max_force_seen = 0.0
     for step in range(args.num_steps):
@@ -211,13 +211,16 @@ def main():
             cam.render()
 
         # Read tactile sensor data
-        force_field = tactile_sensor.read()  # Shape: (num_points * 3,)
+        force_field = tactile_sensor.read()  # Shape: (num_points * 5,) - [fx, fy, fz, fn_mag, ft_mag] per point
 
-        # Reshape to (num_rows, num_cols, 3) for analysis
-        force_field_3d = force_field.reshape(num_rows, num_cols, 3)
+        # Reshape to (num_rows, num_cols, 5) for analysis
+        force_field_5d = force_field.reshape(num_rows, num_cols, 5)
+        force_field_3d = force_field_5d[:, :, :3]  # 3D force vector
+        fn_magnitude = force_field_5d[:, :, 3]     # Normal force magnitude
+        ft_magnitude = force_field_5d[:, :, 4]     # Tangential force magnitude
 
-        force_flat_3d = force_field.reshape(-1, 3)
-        print(force_flat_3d.max(dim=0))
+        force_flat_5d = force_field.reshape(-1, 5)
+        print(f"Max values - Force: {force_flat_5d[:, :3].max(dim=0)}, Fn: {fn_magnitude.max():.2f}, Ft: {ft_magnitude.max():.2f}")
 
         # Store for video
         if args.save_video:
@@ -249,13 +252,18 @@ def main():
     print(f"Maximum force observed: {max_force_seen:.2f} N")
 
     # Read final sensor state
-    final_forces = tactile_sensor.read().reshape(num_rows, num_cols, 3)
+    final_data = tactile_sensor.read().reshape(num_rows, num_cols, 5)
+    final_forces = final_data[:, :, :3]           # 3D force vector
+    final_fn_magnitude = final_data[:, :, 3]      # Normal force magnitude
+    final_ft_magnitude = final_data[:, :, 4]      # Tangential force magnitude
     final_magnitudes = torch.norm(final_forces, dim=-1)
 
     print(f"\nFinal state:")
     print(f"  Total force: {final_magnitudes.sum().item():.2f} N")
     print(f"  Max force:   {final_magnitudes.max().item():.2f} N")
     print(f"  Mean force:  {final_magnitudes.mean().item():.2f} N")
+    print(f"  Max normal force magnitude:     {final_fn_magnitude.max().item():.2f} N")
+    print(f"  Max tangential force magnitude: {final_ft_magnitude.max().item():.2f} N")
 
     # Show points with contact
     contact_mask = final_magnitudes > 0.01
