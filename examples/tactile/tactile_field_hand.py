@@ -88,7 +88,7 @@ def main():
         camera_pos=(0, -0.5, 0.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=40,
-        max_FPS=15,
+        max_FPS=3,
     )
 
     scene = gs.Scene(
@@ -107,10 +107,18 @@ def main():
     plane = scene.add_entity(
         gs.morphs.Plane(),
     )
-    obj = scene.add_entity(
+    # First object - cylinder
+    obj1 = scene.add_entity(
         gs.morphs.Cylinder(
-            radius=0.02, height=0.2,
-            pos=(0.03, 0.01, 0.1),
+            radius=0.01, height=0.2,
+            pos=(0.03, -0.01, 0.1),
+        ),
+    )
+    # Second object - box (demonstrates multi-indenter support)
+    obj2 = scene.add_entity(
+        gs.morphs.Cylinder(
+            radius=0.01, height=0.2,
+            pos=(0.03, 0.025, 0.1),
         ),
     )
     wuji_hand = scene.add_entity(
@@ -185,12 +193,13 @@ def main():
         print(f"  Tactile points: {num_points}")
 
         # Create TactileFieldSensor with custom tactile points
+        # Multi-indenter: pass list of entity indices for both objects
         sensor = scene.add_sensor(
             gs.sensors.TactileField(
                 entity_idx=wuji_hand.idx,
                 link_idx_local=link_idx_local,
-                indenter_entity_idx=obj.idx,
-                indenter_link_idx_local=0,
+                indenter_entity_idx=[obj1.idx, obj2.idx],  # Multiple indenters!
+                indenter_link_idx_local=[0, 0],
                 tactile_points_local=local_positions,  # Use custom points!
                 kn=args.kn,
             )

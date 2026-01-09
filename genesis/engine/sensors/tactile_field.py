@@ -57,28 +57,21 @@ class TactileFieldSensorMetadata(SharedSensorMetadata):
     # Number of tactile points per sensor
     n_tactile_points: list[int] = field(default_factory=list)
 
-    # Indenter link indices (global)
-    indenter_links_idx: list[int] = field(default_factory=list)
-
     # Force field parameters per sensor
     kn: torch.Tensor = make_tensor_field((0, 1))
     kt: torch.Tensor = make_tensor_field((0, 1))
     mu: torch.Tensor = make_tensor_field((0, 1))
     damping: torch.Tensor = make_tensor_field((0, 1))
 
-    # Indenter geometry (for Genesis precomputed SDF access)
-    # Single geometry shared by all sensors
-    indenter_geom: object = None
-
-    # Tighter bounding box for the actual mesh (not SDF volume)
-    # Stored as (lower_bound, upper_bound) in mesh frame
-    indenter_mesh_bbox_lower: torch.Tensor = None
-    indenter_mesh_bbox_upper: torch.Tensor = None
+    # Multi-indenter support: lists of indenter data (shared by all sensors)
+    # Each indenter has: global link index, geometry, and bounding box
+    indenter_links_idx: list[int] = field(default_factory=list)  # Global link index per indenter
+    indenter_geoms: list[object] = field(default_factory=list)  # Geometry per indenter
+    indenter_mesh_bbox_lowers: list[torch.Tensor] = field(default_factory=list)  # Bbox lower per indenter
+    indenter_mesh_bbox_uppers: list[torch.Tensor] = field(default_factory=list)  # Bbox upper per indenter
 
     # Precomputed mappings for efficient batched processing (cached at build time)
-    # These tensors map each tactile point to its sensor and link indices
     precomputed_sensor_link_indices: torch.Tensor = None  # (total_points,) - sensor link idx for each point
-    precomputed_indenter_link_indices: torch.Tensor = None  # (total_points,) - indenter link idx for each point
     precomputed_kn_per_point: torch.Tensor = None  # (total_points,) - kn value for each point
 
 
@@ -112,8 +105,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         else:
             self._n_tactile_points = sensor_options.num_rows * sensor_options.num_cols
         self._tactile_points_local = None
-        self._sdf = None
-        self._indenter_geom = None
         self._link: "RigidLink | None" = None
 
         super().__init__(sensor_options, sensor_idx, data_cls, sensor_manager)
@@ -126,9 +117,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
         # Generate tactile point grid
         self._generate_tactile_points()
-
-        # Get indenter geometry (use Genesis's precomputed SDF)
-        self._get_indenter_geom()
 
         # Store sensor link index
         entity = self._shared_metadata.solver.entities[self._options.entity_idx]
@@ -143,11 +131,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             dim=0,
         )
         self._shared_metadata.n_tactile_points.append(self._n_tactile_points)
-
-        # Store indenter link index
-        indenter_entity = self._shared_metadata.solver.entities[self._options.indenter_entity_idx]
-        indenter_link_idx = self._options.indenter_link_idx_local + indenter_entity.link_start
-        self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
 
         # Store force parameters
         self._shared_metadata.kn = concat_with_tensor(
@@ -171,33 +154,61 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             dim=0,
         )
 
-        # Store indenter geometry (for Genesis SDF)
-        # All sensors share the same indenter geometry
-        if self._shared_metadata.indenter_geom is None:
-            self._shared_metadata.indenter_geom = self._indenter_geom
+        # Register indenter geometries (only on first sensor, all sensors share the same indenters)
+        if len(self._shared_metadata.indenter_geoms) == 0:
+            self._register_indenters()
 
-            # Compute tighter bounding box from actual mesh vertices (not SDF volume)
-            # This gives us the actual object bounds, not the padded SDF bounds
-            mesh_verts = self._indenter_geom._sdf_verts  # Use the verts used for SDF computation
+        # Precompute mappings after this sensor is built
+        self._precompute_mappings()
+
+    def _register_indenters(self):
+        """
+        Register all indenter geometries from the options.
+        This is called only once (on first sensor) since all sensors share the same indenters.
+        """
+        # Normalize to lists
+        ent_indices = (
+            self._options.indenter_entity_idx
+            if isinstance(self._options.indenter_entity_idx, list)
+            else [self._options.indenter_entity_idx]
+        )
+        link_indices = (
+            self._options.indenter_link_idx_local
+            if isinstance(self._options.indenter_link_idx_local, list)
+            else [self._options.indenter_link_idx_local]
+        )
+
+        for ent_idx, link_idx_local in zip(ent_indices, link_indices):
+            indenter_entity = self._shared_metadata.solver.entities[ent_idx]
+            indenter_link_idx = link_idx_local + indenter_entity.link_start
+            indenter_link = indenter_entity.links[link_idx_local]
+
+            if len(indenter_link.geoms) == 0:
+                gs.raise_exception(f"Indenter link (entity={ent_idx}, link={link_idx_local}) has no geometries")
+
+            indenter_geom = indenter_link.geoms[0]
+
+            # Compute bounding box from mesh vertices
+            mesh_verts = indenter_geom._sdf_verts
             bbox_lower = torch.from_numpy(mesh_verts.min(axis=0)).to(device=gs.device, dtype=gs.tc_float)
             bbox_upper = torch.from_numpy(mesh_verts.max(axis=0)).to(device=gs.device, dtype=gs.tc_float)
 
-            # Add small margin for safety (just a few mm, not 20% like SDF)
+            # Add small margin for safety
             safety_margin = 0.005  # 5mm margin
             bbox_lower = bbox_lower - safety_margin
             bbox_upper = bbox_upper + safety_margin
 
-            self._shared_metadata.indenter_mesh_bbox_lower = bbox_lower
-            self._shared_metadata.indenter_mesh_bbox_upper = bbox_upper
+            # Store in metadata
+            self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
+            self._shared_metadata.indenter_geoms.append(indenter_geom)
+            self._shared_metadata.indenter_mesh_bbox_lowers.append(bbox_lower)
+            self._shared_metadata.indenter_mesh_bbox_uppers.append(bbox_upper)
 
             gs.logger.info(
-                f"[TactileFieldSensor] Mesh bbox: "
-                f"lower={bbox_lower.cpu().numpy()}, upper={bbox_upper.cpu().numpy()}"
+                f"[TactileFieldSensor] Registered indenter {len(self._shared_metadata.indenter_geoms)-1}: "
+                f"entity={ent_idx}, link={link_idx_local}, global link idx={indenter_link_idx}, geom_idx={indenter_geom.idx}, "
+                f"sdf_res={indenter_geom.sdf_res}"
             )
-
-        # Precompute mappings after this sensor is built
-        # This will be called for each sensor, but only recomputes when needed
-        self._precompute_mappings()
 
     def _precompute_mappings(self):
         """
@@ -205,9 +216,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         This avoids recomputing the same tensors in every simulation step.
 
         These mappings tell us, for each tactile point:
-        - Which sensor it belongs to
         - Which sensor link it's attached to
-        - Which indenter link to query
         - What force parameters (kn) to use
         """
         n_sensors = len(self._shared_metadata.links_idx)
@@ -215,7 +224,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Convert lists to tensors for indexing
         n_tactile_points_tensor = torch.tensor(self._shared_metadata.n_tactile_points, dtype=gs.tc_int, device=gs.device)
         links_idx_tensor = torch.tensor(self._shared_metadata.links_idx, dtype=gs.tc_int, device=gs.device)
-        indenter_links_idx_tensor = torch.tensor(self._shared_metadata.indenter_links_idx, dtype=gs.tc_int, device=gs.device)
 
         # Create mapping: point index -> sensor index
         point_to_sensor = torch.repeat_interleave(
@@ -225,19 +233,18 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
         # Get sensor link indices for each point
         sensor_link_indices = links_idx_tensor[point_to_sensor]  # (total_points,)
-        indenter_link_indices = indenter_links_idx_tensor[point_to_sensor]  # (total_points,)
 
         # Get kn for each point
         kn_per_point = self._shared_metadata.kn[point_to_sensor, 0]  # (total_points,)
 
         # Store precomputed mappings
         self._shared_metadata.precomputed_sensor_link_indices = sensor_link_indices
-        self._shared_metadata.precomputed_indenter_link_indices = indenter_link_indices
         self._shared_metadata.precomputed_kn_per_point = kn_per_point
 
         gs.logger.debug(
             f"[TactileFieldSensor] Precomputed mappings for {n_sensors} sensors, "
-            f"{len(sensor_link_indices)} total tactile points"
+            f"{len(sensor_link_indices)} total tactile points, "
+            f"{len(self._shared_metadata.indenter_geoms)} indenters"
         )
 
     def _generate_tactile_points(self):
@@ -283,26 +290,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             f"({num_rows}x{num_cols}) on surface ({width:.3f}m x {height:.3f}m)"
         )
 
-    def _get_indenter_geom(self):
-        """
-        Get the indenter geometry from Genesis's rigid solver.
-        This geometry already has a precomputed GPU-accelerated SDF.
-        """
-        entity = self._shared_metadata.solver.entities[self._options.indenter_entity_idx]
-        indenter_link = entity.links[self._options.indenter_link_idx_local]
-
-        if len(indenter_link.geoms) == 0:
-            gs.raise_exception("Indenter link has no geometries")
-
-        # Get the first geometry (assuming single-geometry indenter)
-        self._indenter_geom = indenter_link.geoms[0]
-
-        gs.logger.info(
-            f"[TactileFieldSensor] Using Genesis precomputed SDF for indenter geometry "
-            f"(idx={self._indenter_geom.idx}, res={self._indenter_geom.sdf_res}, "
-            f"cell_size={self._indenter_geom.sdf_cell_size:.6f}m)"
-        )
-
     def _get_return_format(self) -> tuple[int, ...]:
         # Return 3 force components per tactile point
         return (self._n_tactile_points * 3,)
@@ -318,13 +305,12 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         """
         Compute tactile force field using SDF-based penetration depth.
 
-        Optimized version: Process all sensors in one pass by batching all tactile points together.
+        Multi-indenter version: Loop through each indenter and accumulate forces.
 
         Following TacSL's approach (tacsl_sensors.py:825-887):
         1. Transform tactile points to world frame (all sensors at once)
-        2. Transform tactile points to indenter frame (all sensors at once)
-        3. Query SDF for penetration depth and normal (all points at once)
-        4. Compute forces using penalty method (all points at once)
+        2. For each indenter: transform to indenter frame, query SDF, compute forces
+        3. Sum forces from all indenters
         """
         assert shared_metadata.solver is not None
 
@@ -345,11 +331,11 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
         # Use precomputed mappings (cached at build time)
         sensor_link_indices = shared_metadata.precomputed_sensor_link_indices  # (total_points,)
-        indenter_link_indices = shared_metadata.precomputed_indenter_link_indices  # (total_points,)
         kn_per_point = shared_metadata.precomputed_kn_per_point  # (total_points,)
 
         # All tactile points in local frame (already stored contiguously)
         all_tactile_points_local = shared_metadata.tactile_points_local  # (total_points, 3)
+        total_points = all_tactile_points_local.shape[0]
 
         # Transform ALL tactile points to world frame in one operation
         if n_envs == 1 and links_pos.dim() == 2:
@@ -370,16 +356,32 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Single batched transform for ALL points: p_world = link_pos + quat_rotate(link_quat, p_local)
         all_tactile_points_world = point_link_pos + transform_by_quat(all_tactile_points_local_batched, point_link_quat)  # (B, total_points, 3)
 
-        # Compute forces for ALL points in one pass
-        all_forces = cls._compute_sdf_based_forces_batched(
-            shared_metadata,
-            all_tactile_points_world,
-            point_link_quat,
-            sensor_link_indices,
-            indenter_link_indices,
-            kn_per_point,
-            n_envs
-        )  # (B, total_points, 3)
+        # Accumulate forces from all indenters
+        all_forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)
+
+        # Loop through each indenter and compute forces
+        n_indenters = len(shared_metadata.indenter_geoms)
+        for i in range(n_indenters):
+            indenter_link_idx = shared_metadata.indenter_links_idx[i]
+            geom = shared_metadata.indenter_geoms[i]
+            bbox_lower = shared_metadata.indenter_mesh_bbox_lowers[i]
+            bbox_upper = shared_metadata.indenter_mesh_bbox_uppers[i]
+
+            # Compute forces for this indenter
+            indenter_forces = cls._compute_sdf_based_forces_for_indenter(
+                shared_metadata.solver,
+                all_tactile_points_world,
+                point_link_quat,
+                indenter_link_idx,
+                geom,
+                bbox_lower,
+                bbox_upper,
+                kn_per_point,
+                n_envs
+            )  # (B, total_points, 3)
+
+            # Sum forces from all indenters
+            all_forces = all_forces + indenter_forces
 
         # Flatten and store in cache
         shared_ground_truth_cache[:, :] = all_forces.reshape(n_envs, -1)
@@ -515,66 +517,59 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         return points_world  # (B, N, 3)
 
     @classmethod
-    def _compute_sdf_based_forces_batched(cls, shared_metadata, tactile_points_world,
-                                          sensor_link_quat,
-                                          sensor_link_indices, indenter_link_indices,
-                                          kn_per_point, n_envs):
+    def _compute_sdf_based_forces_for_indenter(cls, solver, tactile_points_world,
+                                                sensor_link_quat, indenter_link_idx,
+                                                geom, bbox_lower, bbox_upper,
+                                                kn_per_point, n_envs):
         """
-        Compute forces using Genesis's precomputed SDF for ALL tactile points at once.
-
-        This batched version processes all tactile points from all sensors in a single pass.
+        Compute forces using Genesis's precomputed SDF for a single indenter.
 
         Args:
+            solver: RigidSolver instance
             tactile_points_world: (B, total_points, 3) - ALL tactile points in world frame
-            sensor_link_indices: (total_points,) - Sensor link index for each point
-            indenter_link_indices: (total_points,) - Indenter link index for each point
+            sensor_link_quat: (B, total_points, 4) - Sensor link quaternions for each point
+            indenter_link_idx: int - Global link index of the indenter
+            geom: RigidGeom - Indenter geometry with precomputed SDF
+            bbox_lower: (3,) - Lower bound of indenter mesh bounding box
+            bbox_upper: (3,) - Upper bound of indenter mesh bounding box
             kn_per_point: (total_points,) - Normal stiffness for each point
             n_envs: int - Number of environments
 
         Returns:
             forces: (B, total_points, 3) - Force vectors at each tactile point
         """
-        solver = shared_metadata.solver
         total_points = tactile_points_world.shape[1]
-        forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)  # (B, total_points, 3)
+        forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)
 
         # Get all link poses
         links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
         links_quat = solver.get_links_quat()  # (B, L, 4) or (L, 4)
 
-        # Get indenter poses for each point
+        # Get indenter pose (same for all points since it's a single indenter)
         if n_envs == 1 and links_pos.dim() == 2:
             # Non-batched case
-            indenter_pos = links_pos[indenter_link_indices, :]  # (total_points, 3)
-            indenter_quat = links_quat[indenter_link_indices, :]  # (total_points, 4)
-
-            # Add batch dimension
-            indenter_pos = indenter_pos.unsqueeze(0)  # (1, total_points, 3)
-            indenter_quat = indenter_quat.unsqueeze(0)  # (1, total_points, 4)
+            indenter_pos = links_pos[indenter_link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 3)
+            indenter_quat = links_quat[indenter_link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 4)
         else:
             # Batched case
-            indenter_pos = links_pos[:, indenter_link_indices, :]  # (B, total_points, 3)
-            indenter_quat = links_quat[:, indenter_link_indices, :]  # (B, total_points, 4)
+            indenter_pos = links_pos[:, indenter_link_idx, :].unsqueeze(1)  # (B, 1, 3)
+            indenter_quat = links_quat[:, indenter_link_idx, :].unsqueeze(1)  # (B, 1, 4)
 
-        # Transform ALL points to their respective indenter frames in one operation
+        # Expand to all points
+        indenter_pos = indenter_pos.expand(-1, total_points, -1)  # (B, total_points, 3)
+        indenter_quat = indenter_quat.expand(-1, total_points, -1)  # (B, total_points, 4)
+
+        # Transform ALL points to indenter frame
         points_relative = tactile_points_world - indenter_pos  # (B, total_points, 3)
         points_indenter_frame = inv_transform_by_quat(points_relative, indenter_quat)  # (B, total_points, 3)
 
-        # Bounding box pre-filtering using TIGHT mesh bounds (not loose SDF bounds)
-        # This significantly reduces the number of points we need to query
-        bbox_lower = shared_metadata.indenter_mesh_bbox_lower  # (3,)
-        bbox_upper = shared_metadata.indenter_mesh_bbox_upper  # (3,)
-
-        # Filter points outside tight mesh bounds
+        # Bounding box pre-filtering using TIGHT mesh bounds
         in_bbox = ((points_indenter_frame >= bbox_lower) & (points_indenter_frame <= bbox_upper)).all(dim=2)  # (B, total_points)
 
         if not in_bbox.any():
             return forces  # No points near the indenter
 
-        # Get geometry for SDF query
-        geom = shared_metadata.indenter_geom
-
-        # Query SDF for ALL points in bbox
+        # Query SDF for points in bbox
         points_to_query = points_indenter_frame[in_bbox]  # (M, 3) where M = sum of all in_bbox
 
         if points_to_query.shape[0] > 0:
@@ -603,10 +598,10 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         else:
             normals_indenter = sdf_gradients
 
-        # Transform normals to world frame (each point has its own indenter quat)
+        # Transform normals to world frame
         normals_world = transform_by_quat(normals_indenter, indenter_quat)  # (B, total_points, 3)
 
-        # Compute normal forces (penalty method) - use per-point kn values
+        # Compute normal forces (penalty method)
         kn_per_point_batched = kn_per_point.unsqueeze(0).expand(n_envs, -1)  # (B, total_points)
         fc_norm = kn_per_point_batched * penetration_depth  # (B, total_points)
 
@@ -618,7 +613,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
 
         # Zero out forces where there's no penetration
         forces_local = forces_local * penetration_mask.unsqueeze(-1).float()
-        
+
         return forces_local
 
     @classmethod
