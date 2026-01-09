@@ -339,10 +339,10 @@ class TactileField(SensorOptions):
         Width and height of the tactile surface (default: (0.08, 0.08))
     tactile_points_local : np.ndarray | None
         Custom tactile point positions in local frame (N, 3). If provided, overrides num_rows/num_cols/surface_size.
-    indenter_entity_idx : int
-        Entity index of the indenter object (the object making contact)
-    indenter_link_idx_local : int
-        Local link index of the indenter within its entity (default: 0)
+    indenter_entity_idx : int | list[int]
+        Entity index of the indenter object(s). Can be a single int or a list for multiple indenters.
+    indenter_link_idx_local : int | list[int]
+        Local link index of the indenter(s). Must match length of indenter_entity_idx if both are lists.
     kn : float
         Normal stiffness coefficient (default: 1000.0)
     kt : float
@@ -364,9 +364,9 @@ class TactileField(SensorOptions):
     surface_size: Tuple2FType = (0.08, 0.08)
     tactile_points_local: Optional[Any] = None  # np.ndarray of shape (N, 3)
 
-    # Indenter configuration
-    indenter_entity_idx: int = -1
-    indenter_link_idx_local: int = 0
+    # Indenter configuration (supports single or multiple indenters)
+    indenter_entity_idx: int | list[int] = -1
+    indenter_link_idx_local: int | list[int] = 0
 
     # Force parameters
     kn: float = 1000.0
@@ -391,14 +391,22 @@ class TactileField(SensorOptions):
         if self.link_idx_local < 0 or self.link_idx_local >= entity.n_links:
             gs.raise_exception(f"Invalid link_idx_local {self.link_idx_local} for entity {self.entity_idx}")
 
-        # Validate indenter entity
-        if self.indenter_entity_idx < 0:
-            gs.raise_exception(f"Invalid indenter_entity_idx: {self.indenter_entity_idx}")
-        if self.indenter_entity_idx >= len(scene.entities):
-            gs.raise_exception(f"indenter_entity_idx {self.indenter_entity_idx} out of range")
-        indenter_entity = scene.entities[self.indenter_entity_idx]
-        if not isinstance(indenter_entity, RigidEntity):
-            gs.raise_exception(f"Indenter entity at index {self.indenter_entity_idx} is not a RigidEntity")
+        # Normalize indenter config to lists
+        ent_indices = self.indenter_entity_idx if isinstance(self.indenter_entity_idx, list) else [self.indenter_entity_idx]
+        link_indices = self.indenter_link_idx_local if isinstance(self.indenter_link_idx_local, list) else [self.indenter_link_idx_local]
+
+        if len(ent_indices) != len(link_indices):
+            gs.raise_exception(f"indenter_entity_idx and indenter_link_idx_local must have same length")
+
+        # Validate each indenter
+        for i, (ent_idx, link_idx) in enumerate(zip(ent_indices, link_indices)):
+            if ent_idx < 0:
+                gs.raise_exception(f"Invalid indenter_entity_idx[{i}]: {ent_idx}")
+            if ent_idx >= len(scene.entities):
+                gs.raise_exception(f"indenter_entity_idx[{i}] {ent_idx} out of range")
+            indenter_entity = scene.entities[ent_idx]
+            if not isinstance(indenter_entity, RigidEntity):
+                gs.raise_exception(f"Indenter entity at index {ent_idx} is not a RigidEntity")
 
 
 class TactileField3D(SensorOptions):
