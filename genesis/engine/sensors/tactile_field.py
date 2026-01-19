@@ -186,29 +186,30 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             if len(indenter_link.geoms) == 0:
                 gs.raise_exception(f"Indenter link (entity={ent_idx}, link={link_idx_local}) has no geometries")
 
-            indenter_geom = indenter_link.geoms[0]
+            # Loop through ALL geoms on this link (not just geoms[0])
+            for geom_idx, indenter_geom in enumerate(indenter_link.geoms):
+                # Compute bounding box from mesh vertices
+                mesh_verts = indenter_geom._sdf_verts
+                bbox_lower = torch.from_numpy(mesh_verts.min(axis=0)).to(device=gs.device, dtype=gs.tc_float)
+                bbox_upper = torch.from_numpy(mesh_verts.max(axis=0)).to(device=gs.device, dtype=gs.tc_float)
 
-            # Compute bounding box from mesh vertices
-            mesh_verts = indenter_geom._sdf_verts
-            bbox_lower = torch.from_numpy(mesh_verts.min(axis=0)).to(device=gs.device, dtype=gs.tc_float)
-            bbox_upper = torch.from_numpy(mesh_verts.max(axis=0)).to(device=gs.device, dtype=gs.tc_float)
+                # Add small margin for safety
+                safety_margin = 0.005  # 5mm margin
+                bbox_lower = bbox_lower - safety_margin
+                bbox_upper = bbox_upper + safety_margin
 
-            # Add small margin for safety
-            safety_margin = 0.005  # 5mm margin
-            bbox_lower = bbox_lower - safety_margin
-            bbox_upper = bbox_upper + safety_margin
+                # Store in metadata (same link_idx for all geoms on this link)
+                self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
+                self._shared_metadata.indenter_geoms.append(indenter_geom)
+                self._shared_metadata.indenter_mesh_bbox_lowers.append(bbox_lower)
+                self._shared_metadata.indenter_mesh_bbox_uppers.append(bbox_upper)
 
-            # Store in metadata
-            self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
-            self._shared_metadata.indenter_geoms.append(indenter_geom)
-            self._shared_metadata.indenter_mesh_bbox_lowers.append(bbox_lower)
-            self._shared_metadata.indenter_mesh_bbox_uppers.append(bbox_upper)
-
-            gs.logger.info(
-                f"[TactileFieldSensor] Registered indenter {len(self._shared_metadata.indenter_geoms)-1}: "
-                f"entity={ent_idx}, link={link_idx_local}, global link idx={indenter_link_idx}, geom_idx={indenter_geom.idx}, "
-                f"sdf_res={indenter_geom.sdf_res}"
-            )
+                gs.logger.info(
+                    f"[TactileFieldSensor] Registered indenter {len(self._shared_metadata.indenter_geoms)-1}: "
+                    f"entity={ent_idx}, link={link_idx_local}, geom={geom_idx}/{len(indenter_link.geoms)}, "
+                    f"global link idx={indenter_link_idx}, geom_idx={indenter_geom.idx}, "
+                    f"sdf_res={indenter_geom.sdf_res}"
+                )
 
     def _precompute_mappings(self):
         """
