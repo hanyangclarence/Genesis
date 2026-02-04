@@ -26,7 +26,7 @@ def main():
         camera_pos=(0, -0.5, 0.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=40,
-        max_FPS=15,
+        max_FPS=5,
     )
 
     scene = gs.Scene(
@@ -44,12 +44,12 @@ def main():
     plane = scene.add_entity(
         gs.morphs.Plane(),
     )
-    obj = scene.add_entity(
-        gs.morphs.Cylinder(
-            radius=0.02, height=0.2,
-            pos=(0.03, 0.01, 0.1),
-        ),
-    )
+    # obj = scene.add_entity(
+    #     gs.morphs.Cylinder(
+    #         radius=0.02, height=0.2,
+    #         pos=(0.03, 0.01, 0.1),
+    #     ),
+    # )
     wuji_hand = scene.add_entity(
         gs.morphs.URDF(
             file="genesis/assets/urdf/wujihand-urdf/urdf/right.urdf",
@@ -170,7 +170,7 @@ def main():
         0.01, 0.00, 0.01, 0.01,
         # Finger 5 (Pinky)
         0.01, 0.00, 0.01, 0.01,
-    ])
+    ]) * 0
     
 
     def update_tactile_markers():
@@ -211,7 +211,7 @@ def main():
 
     def grasp():
         # PD control
-        for i in range(300):
+        for i in range(10000):
             wuji_hand.control_dofs_position(
                 pose + i * delta_pose,
                 motors_dof_idx,
