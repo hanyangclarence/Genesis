@@ -4,78 +4,43 @@ Full hand tactile sensing demo using TactileFieldSensor for Genesis v0.3.10.
 This script demonstrates tactile sensors on multiple links of the Wuji hand,
 using precomputed tactile point grids from a JSON file.
 
-Supports headless operation with video saving capabilities.
+Visualizes tactile forces as a 24x32 image using the TactileVisualizer.
 
 Usage:
-    # With viewer
+    # With tactile viewer
     python tactile_field_hand.py --visualize
 
-    # Headless with video outputs
-    python tactile_field_hand.py --save-video tactile.mp4 --save-render scene.mp4
+    # Without tactile viewer
+    python tactile_field_hand.py --no-visualize
 
     # Specific links only
     python tactile_field_hand.py --sensor-links palm_link,finger2_link3
 """
 import argparse
-import json
-from pathlib import Path
 
 import numpy as np
 import torch
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 
 import genesis as gs
-
-
-# YZ offsets for visualization layout (spreading fingers apart for 2D view)
-link_yz_offsets = {
-    "palm_link": (0.0, 0.0),
-    "finger1_link1": (0.05, 0.02),
-    "finger1_link2": (0.05, 0.05),
-    "finger1_link3": (0.05, 0.08),
-    "finger1_link4": (0.05, 0.11),
-    "finger1_tip_link": (0.05, 0.14),
-    "finger2_link1": (0.02, 0.06),
-    "finger2_link2": (0.02, 0.10),
-    "finger2_link3": (0.02, 0.14),
-    "finger2_link4": (0.02, 0.18),
-    "finger2_tip_link": (0.02, 0.21),
-    "finger3_link1": (0.0, 0.06),
-    "finger3_link2": (0.0, 0.10),
-    "finger3_link3": (0.0, 0.14),
-    "finger3_link4": (0.0, 0.18),
-    "finger3_tip_link": (0.0, 0.21),
-    "finger4_link1": (-0.02, 0.06),
-    "finger4_link2": (-0.02, 0.10),
-    "finger4_link3": (-0.02, 0.14),
-    "finger4_link4": (-0.02, 0.18),
-    "finger4_tip_link": (-0.02, 0.21),
-    "finger5_link1": (-0.04, 0.04),
-    "finger5_link2": (-0.04, 0.08),
-    "finger5_link3": (-0.04, 0.12),
-    "finger5_link4": (-0.04, 0.16),
-    "finger5_tip_link": (-0.04, 0.19),
-}
+from genesis.vis import TactileVisualizer
 
 
 def main():
     parser = argparse.ArgumentParser(description="Full Hand Tactile Sensing Demo")
     parser.add_argument("--tactile-grid", type=str,
-                        default="examples/tactile/merged_tactile_grid.json",
+                        default="examples/tactile/full_hand_tactile.json",
                         help="Path to tactile grid JSON file")
+    parser.add_argument("--pixel-mapping", type=str,
+                        default="examples/tactile/tactile_pixel_mapping.json",
+                        help="Path to tactile pixel mapping JSON file")
     parser.add_argument("--sensor-links", type=str, default=None,
                         help="Comma-separated list of link names to add tactile sensors to (default: all links in grid file)")
     parser.add_argument("--visualize", action="store_true", default=True,
-                        help="Show force magnitude visualization")
+                        help="Show tactile map visualization")
     parser.add_argument("--no-visualize", action="store_false", dest="visualize",
-                        help="Disable force visualization")
+                        help="Disable tactile visualization")
     parser.add_argument("--kn", type=float, default=2000.0,
                         help="Normal stiffness coefficient")
-    parser.add_argument("--save-video", type=str, default=None,
-                        help="Path to save tactile force video")
-    parser.add_argument("--save-render", type=str, default=None,
-                        help="Path to save rendered scene video (camera view)")
     parser.add_argument("--num-steps", type=int, default=300,
                         help="Number of simulation steps")
     args = parser.parse_args()
@@ -114,7 +79,7 @@ def main():
             pos=(0.03, -0.01, 0.1),
         ),
     )
-    # Second object - box (demonstrates multi-indenter support)
+    # Second object - demonstrates multi-indenter support
     obj2 = scene.add_entity(
         gs.morphs.Cylinder(
             radius=0.01, height=0.2,
@@ -132,28 +97,34 @@ def main():
         vis_mode="collision"
     )
 
-    ########################## Load tactile grid ##########################
-    tactile_grid_path = Path(args.tactile_grid)
-    if not tactile_grid_path.exists():
-        gs.raise_exception(f"Tactile grid file not found: {tactile_grid_path}")
-
+    ########################## Tactile Visualizer ##########################
     print(f"\n{'='*70}")
-    print(f"Loading tactile grid from: {tactile_grid_path}")
+    print("Initializing TactileVisualizer...")
     print(f"{'='*70}")
 
-    with open(tactile_grid_path, 'r') as f:
-        tactile_data = json.load(f)
+    tactile_vis = TactileVisualizer(
+        tactile_grid_path=args.tactile_grid,
+        pixel_mapping_path=args.pixel_mapping,
+        num_envs=1,
+        show_viewer=args.visualize,
+    )
 
-    links_data = tactile_data.get('links', {})
+    links_data = tactile_vis.links_data
+    print(f"Image shape: {tactile_vis.image_shape}")
+    print(f"Total tactile points: {tactile_vis.num_tactile_points}")
+    print(f"Pixels with mappings: {tactile_vis.num_pixels_with_points}")
 
     # Parse sensor links - use all available links if not specified
+    # IMPORTANT: Keep the same order as in the tactile grid JSON to match global indices
     if args.sensor_links is None:
-        sensor_link_names = list(links_data.keys())
+        sensor_link_names = list(links_data.keys())  # Preserves JSON order
         print(f"\nNo sensor links specified, using all available links from tactile grid")
     else:
-        sensor_link_names = [s.strip() for s in args.sensor_links.split(',') if s.strip()]
+        # Filter but preserve original order from JSON
+        requested_links = set(s.strip() for s in args.sensor_links.split(',') if s.strip())
+        sensor_link_names = [link for link in links_data.keys() if link in requested_links]
 
-    print(f"Configuring tactile sensors for links: {sensor_link_names}")
+    print(f"Configuring tactile sensors for links (in JSON order): {sensor_link_names}")
 
     # Validate sensor links and store tactile points
     tactile_points = {}  # link_name -> np.array of local positions
@@ -176,7 +147,7 @@ def main():
 
     ########################## Add TactileFieldSensors ##########################
     print(f"\n{'='*70}")
-    print(f"Adding TactileFieldSensors")
+    print("Adding TactileFieldSensors")
     print(f"{'='*70}")
 
     sensors = {}  # link_name -> sensor object
@@ -213,28 +184,12 @@ def main():
 
         print(f"  TactileFieldSensor added")
 
-    ########################## camera setup ##########################
-    # Add camera for rendering if requested (must be before scene.build())
-    cam = None
-    if args.save_render:
-        print(f"\n{'='*70}")
-        print(f"Adding camera for scene rendering...")
-        print(f"{'='*70}")
-        cam = scene.add_camera(
-            res=(1280, 720),
-            pos=(0.3, -0.3, 0.3),
-            lookat=(0, 0, 0.1),
-            fov=40,
-            GUI=False,  # Headless camera
-        )
-        print(f"Camera added for rendering to: {args.save_render}")
-
     ########################## build ##########################
     print(f"\n{'='*70}")
-    print(f"Building scene...")
+    print("Building scene...")
     print(f"{'='*70}")
     scene.build()
-    print(f"Scene built")
+    print("Scene built")
 
     # Wuji Hand joints: 5 fingers, each with 4 joints
     joints_name = (
@@ -276,97 +231,33 @@ def main():
         0.01, 0.00, 0.01, 0.01,
     ])
 
-    ########################## Visualization setup ##########################
-    # Storage for video frames (if saving video)
-    force_field_frames = {link_name: [] for link_name in sensor_link_names}
+    ########################## Helper functions ##########################
+    device = tactile_vis.device
 
-    # Interactive visualization (only if visualize is enabled)
-    fig = None
-    scatter_plots = {}
-    if args.visualize:
-        plt.ion()
-        fig, ax = plt.subplots(1, 1, figsize=(10, 8))
+    def read_all_tactile_forces():
+        """Read all sensors and return concatenated force magnitudes as (num_total_points,) tensor."""
+        all_magnitudes = []
 
-        ax.set_title("Full Hand Tactile Force Field")
-        ax.set_xlabel("Y (m)")
-        ax.set_ylabel("Z (m)")
-        ax.set_aspect('equal')
+        # Iterate in JSON order to match global indices
+        for link_name in links_data.keys():
+            if link_name not in sensors:
+                # Link not in sensor list, fill with zeros
+                num_pts = links_data[link_name]['num_points']
+                all_magnitudes.append(torch.zeros(num_pts, device=device))
+                continue
 
-        for link_name in sensor_link_names:
-            local_positions = tactile_points[link_name]
-
-            # Get YZ offset for this link
-            yz_offset = link_yz_offsets.get(link_name, (0.0, 0.0))
-
-            # Apply offset to local positions (project to YZ plane and offset)
-            if link_name != "finger1_link2":
-                offset_positions = local_positions[:, 1:3].copy()  # Y, Z coordinates
-                offset_positions[:, 0] += yz_offset[0]  # Y offset
-                offset_positions[:, 1] += yz_offset[1]  # Z offset
-            else:
-                # project to xz plane for thumb
-                offset_positions = local_positions[:, [0, 2]].copy()  # X, Z coordinates
-                offset_positions[:, 0] += yz_offset[0]  # X offset
-                offset_positions[:, 1] += yz_offset[1]  # Z offset
-
-            # Create scatter plot for tactile points
-            scatter = ax.scatter(
-                offset_positions[:, 0],  # Y coordinate (with offset)
-                offset_positions[:, 1],  # Z coordinate (with offset)
-                c=np.zeros(len(local_positions)),
-                cmap='hot',
-                vmin=0,
-                vmax=10,
-                s=20,
-                edgecolors='black',
-                linewidths=0.5,
-                label=link_name
-            )
-            scatter_plots[link_name] = (scatter, offset_positions)
-
-        # Add colorbar
-        cbar = plt.colorbar(scatter, ax=ax, label='Force (N)')
-        plt.tight_layout()
-
-    def update_visualization():
-        """Update force magnitude visualization."""
-        if not args.visualize:
-            return 0.0
-        max_force_global = 0.0
-        for link_name in sensor_link_names:
             sensor = sensors[link_name]
             config = sensor_configs[link_name]
+            num_pts = config['num_points']
 
-            # Read sensor data
+            # Read sensor data and compute magnitudes
             force_field_full = sensor.read()
-            num_points = config['num_points']
+            force_field_3d = force_field_full.reshape(num_pts, 3)
+            force_magnitudes = torch.norm(force_field_3d, dim=-1)
 
-            # Reshape to (num_points, 3)
-            force_field_3d = force_field_full.reshape(num_points, 3)
+            all_magnitudes.append(force_magnitudes)
 
-            # Compute force magnitudes
-            force_magnitudes = torch.norm(force_field_3d, dim=-1)  # (num_points,)
-
-            # Update scatter plot colors if visualizing
-            force_mag_np = force_magnitudes.cpu().numpy()
-            scatter, offset_positions = scatter_plots[link_name]
-            scatter.set_array(force_mag_np)
-
-            # Track max force for global scaling
-            max_force_global = max(max_force_global, force_mag_np.max())
-
-            # Store for video
-            if args.save_video:
-                force_field_frames[link_name].append(force_field_3d.cpu().numpy())
-
-        # Auto-scale colorbar globally
-        vmax = max(max_force_global, 1.0)
-        for link_name in sensor_link_names:
-            scatter, _ = scatter_plots[link_name]
-            scatter.set_clim(vmin=0, vmax=vmax)
-        plt.pause(0.001)
-
-        return max_force_global
+        return torch.cat(all_magnitudes, dim=0)
 
     def print_force_summary():
         """Print summary of tactile forces."""
@@ -393,14 +284,7 @@ def main():
             print(f"  Max force:   {max_force:.2f} N")
             print(f"  Mean force:  {mean_force:.2f} N")
 
-    # Start camera recording if camera was added
-    if cam is not None:
-        cam.start_recording()
-        print(f"\n{'='*70}")
-        print("Camera recording started...")
-        print(f"{'='*70}")
-
-    # PD control loop
+    ########################## Simulation loop ##########################
     print(f"\n{'='*70}")
     print(f"Running simulation for {args.num_steps} steps...")
     print(f"{'='*70}")
@@ -412,110 +296,20 @@ def main():
         )
         scene.step()
 
-        # Render camera frame if recording
-        if cam is not None:
-            cam.render()
-
-        # Update force visualization every step
-        max_force = update_visualization()
+        # Read tactile forces and update visualization
+        force_magnitudes = read_all_tactile_forces()  # (N,)
+        tactile_maps = tactile_vis.update(force_magnitudes.unsqueeze(0))  # (1, N) -> (1, H, W)
 
         # Print progress every 50 steps
         if i % 50 == 0:
+            max_force = tactile_maps[0].max().item()
             print(f"Step {i:4d}/{args.num_steps}: Max force = {max_force:.2f} N")
-
-    # Stop camera recording if it was started
-    if cam is not None:
-        print(f"\n{'='*70}")
-        print("Stopping camera recording and saving video...")
-        print(f"{'='*70}")
-        cam.stop_recording(save_to_filename=args.save_render, fps=30)
-        print(f"Rendered scene video saved to: {args.save_render}")
 
     # Print final summary
     print_force_summary()
 
-    if args.visualize:
-        plt.ioff()
-
-    # Generate video if requested
-    if args.save_video and force_field_frames:
-        print(f"\n{'='*70}")
-        print("GENERATING TACTILE FORCE VIDEO")
-        print(f"{'='*70}")
-
-        fig_vid, ax_vid = plt.subplots(1, 1, figsize=(10, 8))
-
-        # Find global max force for consistent scaling
-        max_force_all = 0
-        for link_name in sensor_link_names:
-            frames = force_field_frames[link_name]
-            if frames:
-                max_force = max([np.linalg.norm(frame, axis=-1).max() for frame in frames])
-                max_force_all = max(max_force_all, max_force)
-
-        if max_force_all < 1e-6:
-            max_force_all = 1.0
-
-        print(f"Max force magnitude across all sensors: {max_force_all:.2f} N")
-
-        # Animation update function
-        def update(frame_idx):
-            ax_vid.clear()
-            ax_vid.set_title(f"Full Hand Tactile Force Field | Step {frame_idx}")
-            ax_vid.set_xlabel("Y (m)")
-            ax_vid.set_ylabel("Z (m)")
-            ax_vid.set_aspect('equal')
-
-            for link_name in sensor_link_names:
-                local_positions = tactile_points[link_name]
-                force_data = force_field_frames[link_name][frame_idx]  # (N, 3)
-                force_magnitudes = np.linalg.norm(force_data, axis=-1)
-
-                # Get YZ offset for this link
-                yz_offset = link_yz_offsets.get(link_name, (0.0, 0.0))
-
-                # Apply offset to local positions
-                if link_name != "finger1_link2":
-                    offset_positions = local_positions[:, 1:3].copy()
-                else:
-                    offset_positions = local_positions[:, [0, 2]].copy()
-                offset_positions[:, 0] += yz_offset[0]
-                offset_positions[:, 1] += yz_offset[1]
-
-                # Scatter plot with offset positions
-                scatter = ax_vid.scatter(
-                    offset_positions[:, 0],
-                    offset_positions[:, 1],
-                    c=force_magnitudes,
-                    cmap='hot',
-                    vmin=0,
-                    vmax=max_force_all,
-                    s=50,
-                    edgecolors='black',
-                    linewidths=0.5,
-                    label=link_name
-                )
-
-            plt.tight_layout()
-            return []
-
-        # Create animation
-        num_frames = len(force_field_frames[sensor_link_names[0]])
-        print(f"Creating animation with {num_frames} frames...")
-        anim = animation.FuncAnimation(fig_vid, update, frames=num_frames,
-                                       interval=50, blit=False, repeat=True)
-
-        # Save video - try multiple writers
-        print(f"Saving video to: {args.save_video}")
-        Writer = animation.writers['ffmpeg']
-        writer = Writer(fps=30, metadata=dict(artist='Genesis'), bitrate=3600)
-        anim.save(args.save_video, writer=writer)
-
-        print(f"✓ Video saved successfully: {args.save_video}")
-        plt.close(fig_vid)
-
-    if args.visualize:
-        plt.show()
+    # Show viewer (blocking) if visualization enabled
+    tactile_vis.show()
 
     print(f"\n{'='*70}")
     print("DONE")
