@@ -734,5 +734,5 @@ class TactileField3DSensor(Sensor[TactileField3DSensorMetadata]):
         For now, we simply apply the delay and copy ground truth to cache.
         Noise models can be added later if needed.
         """
-        buffered_data.append(shared_ground_truth_cache)
+        buffered_data.set(shared_ground_truth_cache)
         cls._apply_delay_to_shared_cache(shared_metadata, shared_cache, buffered_data)
