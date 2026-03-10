@@ -381,6 +381,10 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
                 n_envs
             )  # (B, total_points, 3)
 
+            # For heterogeneous morphs, only apply forces for envs where this geom is active
+            if geom.active_envs_mask is not None:
+                indenter_forces = indenter_forces * geom.active_envs_mask.view(n_envs, 1, 1).float()
+
             # Sum forces from all indenters
             all_forces = all_forces + indenter_forces
 
