@@ -38,6 +38,38 @@ if TYPE_CHECKING:
 from genesis.options.sensors import TactileField as TactileFieldSensorOptions
 
 
+# ==================== Indenter Group Dataclasses ====================
+
+@dataclass
+class VariantBlock:
+    """Contiguous block of envs assigned to the same variant."""
+    variant_idx: int
+    env_start: int  # inclusive
+    env_end: int    # exclusive
+
+
+@dataclass
+class PieceGroup:
+    """Piece j across all V variants of a heterogeneous indenter."""
+    geoms: list          # V geom objects (None if variant has fewer pieces)
+    bbox_lowers: list    # V x Tensor(3,)
+    bbox_uppers: list    # V x Tensor(3,)
+
+
+@dataclass
+class IndenterLinkGroup:
+    """All indenter geoms on a single link, organized for efficient querying."""
+    link_idx: int
+    is_heterogeneous: bool
+    # Heterogeneous path:
+    piece_groups: list = field(default_factory=list)      # list[PieceGroup]
+    variant_blocks: list = field(default_factory=list)    # list[VariantBlock]
+    # Non-heterogeneous path:
+    geoms: list = field(default_factory=list)
+    bbox_lowers: list = field(default_factory=list)
+    bbox_uppers: list = field(default_factory=list)
+
+
 # ==================== Sensor Metadata ====================
 
 @dataclass
@@ -63,12 +95,8 @@ class TactileFieldSensorMetadata(SharedSensorMetadata):
     mu: torch.Tensor = make_tensor_field((0, 1))
     damping: torch.Tensor = make_tensor_field((0, 1))
 
-    # Multi-indenter support: lists of indenter data (shared by all sensors)
-    # Each indenter has: global link index, geometry, and bounding box
-    indenter_links_idx: list[int] = field(default_factory=list)  # Global link index per indenter
-    indenter_geoms: list[object] = field(default_factory=list)  # Geometry per indenter
-    indenter_mesh_bbox_lowers: list[torch.Tensor] = field(default_factory=list)  # Bbox lower per indenter
-    indenter_mesh_bbox_uppers: list[torch.Tensor] = field(default_factory=list)  # Bbox upper per indenter
+    # Multi-indenter support: indenter link groups (shared by all sensors)
+    indenter_link_groups: list = field(default_factory=list)  # list[IndenterLinkGroup]
 
     # Precomputed mappings for efficient batched processing (cached at build time)
     precomputed_sensor_link_indices: torch.Tensor = None  # (total_points,) - sensor link idx for each point
@@ -155,17 +183,35 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         )
 
         # Register indenter geometries (only on first sensor, all sensors share the same indenters)
-        if len(self._shared_metadata.indenter_geoms) == 0:
+        if len(self._shared_metadata.indenter_link_groups) == 0:
             self._register_indenters()
 
         # Precompute mappings after this sensor is built
         self._precompute_mappings()
 
+    @staticmethod
+    def _compute_geom_bbox(geom):
+        """Compute bounding box from a geom's SDF mesh vertices with safety margin."""
+        mesh_verts = geom._sdf_verts
+        bbox_lower = torch.from_numpy(mesh_verts.min(axis=0)).to(device=gs.device, dtype=gs.tc_float)
+        bbox_upper = torch.from_numpy(mesh_verts.max(axis=0)).to(device=gs.device, dtype=gs.tc_float)
+        safety_margin = 0.005  # 5mm margin
+        return bbox_lower - safety_margin, bbox_upper + safety_margin
+
     def _register_indenters(self):
         """
         Register all indenter geometries from the options.
         This is called only once (on first sensor) since all sensors share the same indenters.
+
+        Builds IndenterLinkGroup structures that organize geoms by link for efficient
+        querying. For heterogeneous entities, geoms are further organized into PieceGroups
+        and VariantBlocks to enable batched SDF queries per-variant.
         """
+        solver = self._shared_metadata.solver
+        n_envs = solver._scene._B
+        if n_envs == 0:
+            n_envs = 1
+
         # Normalize to lists
         ent_indices = (
             self._options.indenter_entity_idx
@@ -178,38 +224,118 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             else [self._options.indenter_link_idx_local]
         )
 
+        total_geom_count = 0
         for ent_idx, link_idx_local in zip(ent_indices, link_indices):
-            indenter_entity = self._shared_metadata.solver.entities[ent_idx]
+            indenter_entity = solver.entities[ent_idx]
             indenter_link_idx = link_idx_local + indenter_entity.link_start
             indenter_link = indenter_entity.links[link_idx_local]
 
             if len(indenter_link.geoms) == 0:
                 gs.raise_exception(f"Indenter link (entity={ent_idx}, link={link_idx_local}) has no geometries")
 
-            # Loop through ALL geoms on this link (not just geoms[0])
-            for geom_idx, indenter_geom in enumerate(indenter_link.geoms):
-                # Compute bounding box from mesh vertices
-                mesh_verts = indenter_geom._sdf_verts
-                bbox_lower = torch.from_numpy(mesh_verts.min(axis=0)).to(device=gs.device, dtype=gs.tc_float)
-                bbox_upper = torch.from_numpy(mesh_verts.max(axis=0)).to(device=gs.device, dtype=gs.tc_float)
+            if indenter_entity._enable_heterogeneous:
+                # --- Heterogeneous path ---
+                n_variants = len(indenter_entity.variants_geom_start)
 
-                # Add small margin for safety
-                safety_margin = 0.005  # 5mm margin
-                bbox_lower = bbox_lower - safety_margin
-                bbox_upper = bbox_upper + safety_margin
+                # Compute variant-to-env mapping (replicate formula from rigid_solver_decomp.py)
+                if n_envs >= n_variants:
+                    base = n_envs // n_variants
+                    extra = n_envs % n_variants
+                    sizes = np.concatenate([np.full(extra, base + 1, dtype=int),
+                                            np.full(n_variants - extra, base, dtype=int)])
+                else:
+                    sizes = np.ones(min(n_envs, n_variants), dtype=int)
 
-                # Store in metadata (same link_idx for all geoms on this link)
-                self._shared_metadata.indenter_links_idx.append(indenter_link_idx)
-                self._shared_metadata.indenter_geoms.append(indenter_geom)
-                self._shared_metadata.indenter_mesh_bbox_lowers.append(bbox_lower)
-                self._shared_metadata.indenter_mesh_bbox_uppers.append(bbox_upper)
+                # Build VariantBlocks from contiguous env ranges
+                variant_blocks = []
+                env_cursor = 0
+                for v_idx, sz in enumerate(sizes):
+                    if sz > 0:
+                        variant_blocks.append(VariantBlock(
+                            variant_idx=v_idx,
+                            env_start=env_cursor,
+                            env_end=env_cursor + sz,
+                        ))
+                        env_cursor += sz
 
-                gs.logger.info(
-                    f"[TactileFieldSensor] Registered indenter {len(self._shared_metadata.indenter_geoms)-1}: "
-                    f"entity={ent_idx}, link={link_idx_local}, geom={geom_idx}/{len(indenter_link.geoms)}, "
-                    f"global link idx={indenter_link_idx}, geom_idx={indenter_geom.idx}, "
-                    f"sdf_res={indenter_geom.sdf_res}"
+                # Build PieceGroups: piece j across all variants
+                np_geom_start = np.array(indenter_entity.variants_geom_start, dtype=int)
+                np_geom_end = np.array(indenter_entity.variants_geom_end, dtype=int)
+                n_pieces_per_variant = np_geom_end - np_geom_start
+                max_pieces = int(n_pieces_per_variant.max())
+                link_geom_start = indenter_link._geom_start
+
+                piece_groups = []
+                for j in range(max_pieces):
+                    pg_geoms = []
+                    pg_bbox_lowers = []
+                    pg_bbox_uppers = []
+                    for v in range(n_variants):
+                        if j < n_pieces_per_variant[v]:
+                            local_idx = np_geom_start[v] + j - link_geom_start
+                            geom = indenter_link.geoms[local_idx]
+                            bbox_lo, bbox_hi = self._compute_geom_bbox(geom)
+                            pg_geoms.append(geom)
+                            pg_bbox_lowers.append(bbox_lo)
+                            pg_bbox_uppers.append(bbox_hi)
+                        else:
+                            pg_geoms.append(None)
+                            pg_bbox_lowers.append(None)
+                            pg_bbox_uppers.append(None)
+                    piece_groups.append(PieceGroup(
+                        geoms=pg_geoms,
+                        bbox_lowers=pg_bbox_lowers,
+                        bbox_uppers=pg_bbox_uppers,
+                    ))
+
+                lg = IndenterLinkGroup(
+                    link_idx=indenter_link_idx,
+                    is_heterogeneous=True,
+                    piece_groups=piece_groups,
+                    variant_blocks=variant_blocks,
                 )
+                self._shared_metadata.indenter_link_groups.append(lg)
+
+                n_geoms_registered = sum(1 for pg in piece_groups
+                                         for g in pg.geoms if g is not None)
+                gs.logger.info(
+                    f"[TactileFieldSensor] Registered heterogeneous indenter link group: "
+                    f"entity={ent_idx}, link={link_idx_local}, "
+                    f"global link idx={indenter_link_idx}, "
+                    f"{n_variants} variants, {max_pieces} max pieces, "
+                    f"{n_geoms_registered} total geoms, "
+                    f"{len(variant_blocks)} variant blocks"
+                )
+                total_geom_count += n_geoms_registered
+            else:
+                # --- Non-heterogeneous path ---
+                lg_geoms = []
+                lg_bbox_lowers = []
+                lg_bbox_uppers = []
+                for geom_idx, indenter_geom in enumerate(indenter_link.geoms):
+                    bbox_lo, bbox_hi = self._compute_geom_bbox(indenter_geom)
+                    lg_geoms.append(indenter_geom)
+                    lg_bbox_lowers.append(bbox_lo)
+                    lg_bbox_uppers.append(bbox_hi)
+
+                    gs.logger.info(
+                        f"[TactileFieldSensor] Registered indenter {total_geom_count}: "
+                        f"entity={ent_idx}, link={link_idx_local}, "
+                        f"geom={geom_idx}/{len(indenter_link.geoms)}, "
+                        f"global link idx={indenter_link_idx}, "
+                        f"geom_idx={indenter_geom.idx}, "
+                        f"sdf_res={indenter_geom.sdf_res}"
+                    )
+                    total_geom_count += 1
+
+                lg = IndenterLinkGroup(
+                    link_idx=indenter_link_idx,
+                    is_heterogeneous=False,
+                    geoms=lg_geoms,
+                    bbox_lowers=lg_bbox_lowers,
+                    bbox_uppers=lg_bbox_uppers,
+                )
+                self._shared_metadata.indenter_link_groups.append(lg)
 
     def _precompute_mappings(self):
         """
@@ -242,10 +368,19 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         self._shared_metadata.precomputed_sensor_link_indices = sensor_link_indices
         self._shared_metadata.precomputed_kn_per_point = kn_per_point
 
+        # Count total geoms across all link groups
+        n_total_geoms = 0
+        for lg in self._shared_metadata.indenter_link_groups:
+            if lg.is_heterogeneous:
+                n_total_geoms += sum(1 for pg in lg.piece_groups
+                                     for g in pg.geoms if g is not None)
+            else:
+                n_total_geoms += len(lg.geoms)
+
         gs.logger.debug(
             f"[TactileFieldSensor] Precomputed mappings for {n_sensors} sensors, "
             f"{len(sensor_link_indices)} total tactile points, "
-            f"{len(self._shared_metadata.indenter_geoms)} indenters"
+            f"{n_total_geoms} indenters across {len(self._shared_metadata.indenter_link_groups)} link groups"
         )
 
     def _generate_tactile_points(self):
@@ -306,12 +441,9 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         """
         Compute tactile force field using SDF-based penetration depth.
 
-        Multi-indenter version: Loop through each indenter and accumulate forces.
-
-        Following TacSL's approach (tacsl_sensors.py:825-887):
-        1. Transform tactile points to world frame (all sensors at once)
-        2. For each indenter: transform to indenter frame, query SDF, compute forces
-        3. Sum forces from all indenters
+        Batched version: organizes indenters by link group to minimize redundant
+        frame transforms and SDF queries. For heterogeneous entities, queries only
+        the relevant variant's SDF for each env slice.
         """
         assert shared_metadata.solver is not None
 
@@ -326,9 +458,10 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         if n_sensors == 0:
             return
 
-        # Get all link poses at once
+        # Get all link poses ONCE
         links_pos = shared_metadata.solver.get_links_pos()  # (B, L, 3) or (L, 3)
         links_quat = shared_metadata.solver.get_links_quat()  # (B, L, 4) or (L, 4)
+        is_non_batched = (n_envs == 1 and links_pos.dim() == 2)
 
         # Use precomputed mappings (cached at build time)
         sensor_link_indices = shared_metadata.precomputed_sensor_link_indices  # (total_points,)
@@ -339,7 +472,7 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         total_points = all_tactile_points_local.shape[0]
 
         # Transform ALL tactile points to world frame in one operation
-        if n_envs == 1 and links_pos.dim() == 2:
+        if is_non_batched:
             # Non-batched case
             point_link_pos = links_pos[sensor_link_indices, :]  # (total_points, 3)
             point_link_quat = links_quat[sensor_link_indices, :]  # (total_points, 4)
@@ -360,33 +493,127 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         # Accumulate forces from all indenters
         all_forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)
 
-        # Loop through each indenter and compute forces
-        n_indenters = len(shared_metadata.indenter_geoms)
-        for i in range(n_indenters):
-            indenter_link_idx = shared_metadata.indenter_links_idx[i]
-            geom = shared_metadata.indenter_geoms[i]
-            bbox_lower = shared_metadata.indenter_mesh_bbox_lowers[i]
-            bbox_upper = shared_metadata.indenter_mesh_bbox_uppers[i]
+        # Loop through each indenter link group
+        for lg in shared_metadata.indenter_link_groups:
+            # Get indenter pose ONCE for this link
+            if is_non_batched:
+                indenter_pos = links_pos[lg.link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 3)
+                indenter_quat = links_quat[lg.link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 4)
+            else:
+                indenter_pos = links_pos[:, lg.link_idx, :].unsqueeze(1)  # (B, 1, 3)
+                indenter_quat = links_quat[:, lg.link_idx, :].unsqueeze(1)  # (B, 1, 4)
 
-            # Compute forces for this indenter
-            indenter_forces = cls._compute_sdf_based_forces_for_indenter(
-                shared_metadata.solver,
-                all_tactile_points_world,
-                point_link_quat,
-                indenter_link_idx,
-                geom,
-                bbox_lower,
-                bbox_upper,
-                kn_per_point,
-                n_envs
-            )  # (B, total_points, 3)
+            # Expand to all points
+            indenter_pos_exp = indenter_pos.expand(-1, total_points, -1)  # (B, total_points, 3)
+            indenter_quat_exp = indenter_quat.expand(-1, total_points, -1)  # (B, total_points, 4)
 
-            # For heterogeneous morphs, only apply forces for envs where this geom is active
-            if geom.active_envs_mask is not None:
-                indenter_forces = indenter_forces * geom.active_envs_mask.view(n_envs, 1, 1).float()
+            # Transform ALL points to indenter frame ONCE for this link
+            points_relative = all_tactile_points_world - indenter_pos_exp  # (B, total_points, 3)
+            points_indenter_frame = inv_transform_by_quat(points_relative, indenter_quat_exp)  # (B, total_points, 3)
 
-            # Sum forces from all indenters
-            all_forces = all_forces + indenter_forces
+            if lg.is_heterogeneous:
+                # Batched path: loop P piece groups x V variant blocks
+                for pg in lg.piece_groups:
+                    for vb in lg.variant_blocks:
+                        geom = pg.geoms[vb.variant_idx]
+                        if geom is None:
+                            continue
+                        s, e = vb.env_start, vb.env_end
+                        n_v = e - s
+
+                        # Slice envs (contiguous, zero-copy)
+                        pts_v = points_indenter_frame[s:e]  # (n_v, total_points, 3)
+
+                        # Bbox filter with this variant's bbox
+                        bbox_lo = pg.bbox_lowers[vb.variant_idx]
+                        bbox_hi = pg.bbox_uppers[vb.variant_idx]
+                        in_bbox = ((pts_v >= bbox_lo) & (pts_v <= bbox_hi)).all(dim=2)  # (n_v, total_points)
+
+                        if not in_bbox.any():
+                            continue
+
+                        # SDF query
+                        points_to_query = pts_v[in_bbox]  # (M, 3)
+                        if points_to_query.shape[0] == 0:
+                            continue
+
+                        signed_distances_flat, sdf_gradients_flat = cls._query_genesis_sdf_gpu(geom, points_to_query)
+
+                        # Scatter results back
+                        signed_distances = torch.zeros((n_v, total_points), device=gs.device, dtype=gs.tc_float)
+                        sdf_gradients = torch.zeros((n_v, total_points, 3), device=gs.device, dtype=gs.tc_float)
+                        signed_distances[in_bbox] = signed_distances_flat
+                        sdf_gradients[in_bbox] = sdf_gradients_flat
+
+                        # Compute penetration and normals
+                        penetration_depth = -signed_distances
+                        penetration_mask = penetration_depth > 0
+
+                        if not penetration_mask.any():
+                            continue
+
+                        sdf_gradients = -sdf_gradients
+                        normals_indenter = sdf_gradients.clone()
+                        norms = torch.norm(normals_indenter, dim=2, keepdim=True)
+                        normals_indenter = normals_indenter / (norms + 1e-9)
+
+                        # Transform normals to world frame
+                        ind_quat_v = indenter_quat_exp[s:e]  # (n_v, total_points, 4)
+                        normals_world = transform_by_quat(normals_indenter, ind_quat_v)
+
+                        # Compute normal forces
+                        kn_batched = kn_per_point.unsqueeze(0).expand(n_v, -1)
+                        fc_norm = kn_batched * penetration_depth
+                        forces_world = fc_norm.unsqueeze(-1) * normals_world
+
+                        # Transform to sensor link frame
+                        sensor_quat_v = point_link_quat[s:e]  # (n_v, total_points, 4)
+                        forces_local = inv_transform_by_quat(forces_world, sensor_quat_v)
+                        forces_local = forces_local * penetration_mask.unsqueeze(-1).float()
+
+                        all_forces[s:e] += forces_local
+            else:
+                # Non-heterogeneous path: loop per geom (same link, shared frame transform)
+                for i, geom in enumerate(lg.geoms):
+                    bbox_lo = lg.bbox_lowers[i]
+                    bbox_hi = lg.bbox_uppers[i]
+                    in_bbox = ((points_indenter_frame >= bbox_lo) & (points_indenter_frame <= bbox_hi)).all(dim=2)
+
+                    if not in_bbox.any():
+                        continue
+
+                    points_to_query = points_indenter_frame[in_bbox]
+                    if points_to_query.shape[0] == 0:
+                        continue
+
+                    signed_distances_flat, sdf_gradients_flat = cls._query_genesis_sdf_gpu(geom, points_to_query)
+
+                    signed_distances = torch.zeros((n_envs, total_points), device=gs.device, dtype=gs.tc_float)
+                    sdf_gradients = torch.zeros((n_envs, total_points, 3), device=gs.device, dtype=gs.tc_float)
+                    signed_distances[in_bbox] = signed_distances_flat
+                    sdf_gradients[in_bbox] = sdf_gradients_flat
+
+                    penetration_depth = -signed_distances
+                    penetration_mask = penetration_depth > 0
+
+                    if not penetration_mask.any():
+                        continue
+
+                    sdf_gradients = -sdf_gradients
+                    normals_indenter = sdf_gradients.clone()
+                    norms = torch.norm(normals_indenter, dim=2, keepdim=True)
+                    normals_indenter = normals_indenter / (norms + 1e-9)
+
+                    normals_world = transform_by_quat(normals_indenter, indenter_quat_exp)
+
+                    kn_batched = kn_per_point.unsqueeze(0).expand(n_envs, -1)
+                    fc_norm = kn_batched * penetration_depth
+                    forces_world = fc_norm.unsqueeze(-1) * normals_world
+
+                    forces_local = inv_transform_by_quat(forces_world, point_link_quat)
+                    forces_local = forces_local * penetration_mask.unsqueeze(-1).float()
+
+                    all_forces += forces_local
 
         # Flatten and store in cache
         shared_ground_truth_cache[:, :] = all_forces.reshape(n_envs, -1)
@@ -492,134 +719,6 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
             sdf_grads[inside_mask] = sdf_grads_sampled.squeeze(0).squeeze(1).squeeze(1).permute(1, 0)
 
         return sdf_values, sdf_grads
-
-    @classmethod
-    def _transform_points_to_world(cls, solver, link_idx, points_local, n_envs):
-        """
-        Transform tactile points from link local frame to world frame.
-        """
-        # Get link pose
-        links_pos = solver.get_links_pos()
-        links_quat = solver.get_links_quat()
-
-        if n_envs == 1 and links_pos.dim() == 2:
-            # Non-batched: add batch dimension
-            link_pos = links_pos[link_idx, :].unsqueeze(0)  # (1, 3)
-            link_quat = links_quat[link_idx, :].unsqueeze(0)  # (1, 4)
-        else:
-            link_pos = links_pos[:, link_idx, :]  # (B, 3)
-            link_quat = links_quat[:, link_idx, :]  # (B, 4)
-
-        # Expand for all tactile points
-        n_points = points_local.shape[0]
-        link_pos_expanded = link_pos.unsqueeze(1).expand(n_envs, n_points, 3)  # (B, N, 3)
-        link_quat_expanded = link_quat.unsqueeze(1).expand(n_envs, n_points, 4)  # (B, N, 4)
-        points_local_expanded = points_local.unsqueeze(0).expand(n_envs, n_points, 3)  # (B, N, 3)
-
-        # Transform: p_world = link_pos + quat_rotate(link_quat, p_local)
-        points_world = link_pos_expanded + transform_by_quat(points_local_expanded, link_quat_expanded)
-
-        return points_world  # (B, N, 3)
-
-    @classmethod
-    def _compute_sdf_based_forces_for_indenter(cls, solver, tactile_points_world,
-                                                sensor_link_quat, indenter_link_idx,
-                                                geom, bbox_lower, bbox_upper,
-                                                kn_per_point, n_envs):
-        """
-        Compute forces using Genesis's precomputed SDF for a single indenter.
-
-        Args:
-            solver: RigidSolver instance
-            tactile_points_world: (B, total_points, 3) - ALL tactile points in world frame
-            sensor_link_quat: (B, total_points, 4) - Sensor link quaternions for each point
-            indenter_link_idx: int - Global link index of the indenter
-            geom: RigidGeom - Indenter geometry with precomputed SDF
-            bbox_lower: (3,) - Lower bound of indenter mesh bounding box
-            bbox_upper: (3,) - Upper bound of indenter mesh bounding box
-            kn_per_point: (total_points,) - Normal stiffness for each point
-            n_envs: int - Number of environments
-
-        Returns:
-            forces: (B, total_points, 3) - Force vectors at each tactile point
-        """
-        total_points = tactile_points_world.shape[1]
-        forces = torch.zeros((n_envs, total_points, 3), dtype=gs.tc_float, device=gs.device)
-
-        # Get all link poses
-        links_pos = solver.get_links_pos()  # (B, L, 3) or (L, 3)
-        links_quat = solver.get_links_quat()  # (B, L, 4) or (L, 4)
-
-        # Get indenter pose (same for all points since it's a single indenter)
-        if n_envs == 1 and links_pos.dim() == 2:
-            # Non-batched case
-            indenter_pos = links_pos[indenter_link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 3)
-            indenter_quat = links_quat[indenter_link_idx, :].unsqueeze(0).unsqueeze(1)  # (1, 1, 4)
-        else:
-            # Batched case
-            indenter_pos = links_pos[:, indenter_link_idx, :].unsqueeze(1)  # (B, 1, 3)
-            indenter_quat = links_quat[:, indenter_link_idx, :].unsqueeze(1)  # (B, 1, 4)
-
-        # Expand to all points
-        indenter_pos = indenter_pos.expand(-1, total_points, -1)  # (B, total_points, 3)
-        indenter_quat = indenter_quat.expand(-1, total_points, -1)  # (B, total_points, 4)
-
-        # Transform ALL points to indenter frame
-        points_relative = tactile_points_world - indenter_pos  # (B, total_points, 3)
-        points_indenter_frame = inv_transform_by_quat(points_relative, indenter_quat)  # (B, total_points, 3)
-
-        # Bounding box pre-filtering using TIGHT mesh bounds
-        in_bbox = ((points_indenter_frame >= bbox_lower) & (points_indenter_frame <= bbox_upper)).all(dim=2)  # (B, total_points)
-
-        if not in_bbox.any():
-            return forces  # No points near the indenter
-
-        # Query SDF for points in bbox
-        points_to_query = points_indenter_frame[in_bbox]  # (M, 3) where M = sum of all in_bbox
-
-        if points_to_query.shape[0] > 0:
-            # Query SDF for all points at once
-            signed_distances_flat, sdf_gradients_flat = cls._query_genesis_sdf_gpu(geom, points_to_query)  # (M,), (M, 3)
-
-            # Scatter results back to original shape
-            signed_distances = torch.zeros((n_envs, total_points), device=gs.device, dtype=gs.tc_float)
-            sdf_gradients = torch.zeros((n_envs, total_points, 3), device=gs.device, dtype=gs.tc_float)
-            signed_distances[in_bbox] = signed_distances_flat
-            sdf_gradients[in_bbox] = sdf_gradients_flat
-        else:
-            signed_distances = torch.zeros((n_envs, total_points), device=gs.device, dtype=gs.tc_float)
-            sdf_gradients = torch.zeros((n_envs, total_points, 3), device=gs.device, dtype=gs.tc_float)
-
-        # Compute penetration and normals
-        penetration_depth = -signed_distances  # (B, total_points)
-        penetration_mask = penetration_depth > 0  # (B, total_points)
-        sdf_gradients = -sdf_gradients  # Flip gradients to point outward
-
-        if penetration_mask.any():
-            # Normalize gradients to get normals
-            normals_indenter = sdf_gradients.clone()
-            norms = torch.norm(normals_indenter, dim=2, keepdim=True)
-            normals_indenter = normals_indenter / (norms + 1e-9)
-        else:
-            normals_indenter = sdf_gradients
-
-        # Transform normals to world frame
-        normals_world = transform_by_quat(normals_indenter, indenter_quat)  # (B, total_points, 3)
-
-        # Compute normal forces (penalty method)
-        kn_per_point_batched = kn_per_point.unsqueeze(0).expand(n_envs, -1)  # (B, total_points)
-        fc_norm = kn_per_point_batched * penetration_depth  # (B, total_points)
-
-        # Apply forces in normal direction
-        forces_world = fc_norm.unsqueeze(-1) * normals_world  # (B, total_points, 3)
-
-        # Transform forces to sensor link frame
-        forces_local = inv_transform_by_quat(forces_world, sensor_link_quat)  # (B, total_points, 3)
-
-        # Zero out forces where there's no penetration
-        forces_local = forces_local * penetration_mask.unsqueeze(-1).float()
-
-        return forces_local
 
     @classmethod
     def _update_shared_cache(

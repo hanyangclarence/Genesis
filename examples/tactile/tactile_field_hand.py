@@ -53,7 +53,7 @@ def main():
         camera_pos=(0, -0.5, 0.5),
         camera_lookat=(0.0, 0.0, 0.0),
         camera_fov=40,
-        max_FPS=3,
+        max_FPS=15,
     )
 
     scene = gs.Scene(
