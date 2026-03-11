@@ -25,7 +25,7 @@
   - [2025-01-08] v0.2.1をリリースしました 🎊 🎉
   - [2025-01-08] [Discord](https://discord.gg/nukCuhB47p)と[Wechat](https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ)のグループを作成しました。
   - [2024-12-25] レイトレーシングレンダラーをサポートする[docker](https://www.google.com/search?q=%23docker)を追加しました。
-  - [2024-12-24] [Genesisへの貢献](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md)に関するガイドラインを追加しました。
+  - [2024-12-24] [Genesisへの貢献](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md)に関するガイドラインを追加しました。
 
 ## 目次
 
@@ -93,6 +93,45 @@ git clone https://github.com/Genesis-Embodied-AI/Genesis.git
 cd Genesis
 pip install -e ".[dev]"
 ```
+HEADを移動した後は、すべての依存関係とエントリーポイントが最新であることを確認するために、`pip install -e ".[dev]"` を体系的に実行することを推奨します。
+
+### uvを使用する場合
+
+[uv](https://docs.astral.sh/uv/) は高速なPythonパッケージ・プロジェクトマネージャーです。
+
+**uvのインストール：**
+```bash
+# macOSおよびLinux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**uvでクイックスタート：**
+```bash
+git clone https://github.com/Genesis-Embodied-AI/Genesis.git
+cd Genesis
+uv sync
+```
+
+次に、お使いのプラットフォーム向けにPyTorchをインストールします：
+
+```bash
+# NVIDIA GPU（例：CUDA 12.6）
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# CPUのみ（Linux/Windows）
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Apple Silicon（Metal/MPS）
+uv pip install torch
+```
+
+サンプルを実行：
+```bash
+uv run examples/rigid/single_franka.py
+```
 
 ## Docker
 
@@ -141,7 +180,7 @@ docker run -it --network=host \
  genesis-amd
 ```
 
-サンプルは`/workspace/examples`からアクセス可能です。注意：AMDユーザーはVulkanバックエンドを使用してください。これは、Genesisを初期化するために`gs.init(vulkan)`を呼び出す必要があることを意味します。
+サンプルは`/workspace/examples`からアクセス可能です。注意：AMDユーザーはROCm (HIP)バックエンドを使用してください。これは、Genesisを初期化するために`gs.init(backend=gs.amdgpu)`を呼び出す必要があることを意味します。
 
 ## ドキュメント
 
@@ -155,7 +194,7 @@ Genesisプロジェクトはオープンで協力的な取り組みです。以�
 - GitHub Issuesを通じた**バグ報告**。
 - Genesisの使いやすさを向上させるための**提案**。
 
-詳細は[貢献ガイド](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md)をご参照ください。
+詳細は[貢献ガイド](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md)をご参照ください。
 
 ## サポート
 

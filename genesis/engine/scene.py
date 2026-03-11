@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Callable, Iterable, Literal
 
 import numpy as np
 import torch
-import gstaichi as ti
-from gstaichi.lang import impl
+import quadrants as qd
+from quadrants.lang import impl
 
 import genesis as gs
 import genesis.utils.geom as gu
@@ -17,6 +17,7 @@ from genesis.engine.force_fields import ForceField
 from genesis.engine.materials.base import Material
 from genesis.engine.states.solvers import SimState
 from genesis.options import (
+    KinematicOptions,
     BaseCouplerOptions,
     LegacyCouplerOptions,
     FEMOptions,
@@ -92,6 +93,7 @@ class Scene(RBC):
         coupler_options: BaseCouplerOptions | None = None,
         tool_options: ToolOptions | None = None,
         rigid_options: RigidOptions | None = None,
+        kinematic_options: KinematicOptions | None = None,
         mpm_options: MPMOptions | None = None,
         sph_options: SPHOptions | None = None,
         fem_options: FEMOptions | None = None,
@@ -104,7 +106,7 @@ class Scene(RBC):
         show_viewer: bool | None = None,
         show_FPS: bool | None = None,  # deprecated, use profiling_options.show_FPS instead
     ):
-        # Delay simulator import to allow specifying gstaichi array type at init
+        # Delay simulator import to allow specifying Quadrants array type at init
         from genesis.engine.simulator import Simulator
 
         # Handling of default arguments
@@ -112,6 +114,7 @@ class Scene(RBC):
         coupler_options = coupler_options or LegacyCouplerOptions()
         tool_options = tool_options or ToolOptions()
         rigid_options = rigid_options or RigidOptions()
+        kinematic_options = kinematic_options or KinematicOptions()
         mpm_options = mpm_options or MPMOptions()
         sph_options = sph_options or SPHOptions()
         fem_options = fem_options or FEMOptions()
@@ -132,6 +135,7 @@ class Scene(RBC):
             coupler_options,
             tool_options,
             rigid_options,
+            kinematic_options,
             mpm_options,
             sph_options,
             fem_options,
@@ -147,6 +151,7 @@ class Scene(RBC):
         self.coupler_options = coupler_options
         self.tool_options = tool_options
         self.rigid_options = rigid_options
+        self.kinematic_options = kinematic_options
         self.mpm_options = mpm_options
         self.sph_options = sph_options
         self.fem_options = fem_options
@@ -161,6 +166,7 @@ class Scene(RBC):
         # merge options
         self.tool_options.copy_attributes_from(self.sim_options)
         self.rigid_options.copy_attributes_from(self.sim_options)
+        self.kinematic_options.copy_attributes_from(self.sim_options)
         self.mpm_options.copy_attributes_from(self.sim_options)
         self.sph_options.copy_attributes_from(self.sim_options)
         self.fem_options.copy_attributes_from(self.sim_options)
@@ -174,6 +180,7 @@ class Scene(RBC):
             coupler_options=self.coupler_options,
             tool_options=self.tool_options,
             rigid_options=self.rigid_options,
+            kinematic_options=self.kinematic_options,
             mpm_options=self.mpm_options,
             sph_options=self.sph_options,
             fem_options=self.fem_options,
@@ -214,6 +221,7 @@ class Scene(RBC):
         coupler_options: BaseCouplerOptions,
         tool_options: ToolOptions,
         rigid_options: RigidOptions,
+        kinematic_options: KinematicOptions,
         mpm_options: MPMOptions,
         sph_options: SPHOptions,
         fem_options: FEMOptions,
@@ -235,6 +243,9 @@ class Scene(RBC):
 
         if not isinstance(rigid_options, RigidOptions):
             gs.raise_exception("`rigid_options` should be an instance of `RigidOptions`.")
+
+        if not isinstance(kinematic_options, KinematicOptions):
+            gs.raise_exception("`kinematic_options` should be an instance of `KinematicOptions`.")
 
         if not isinstance(mpm_options, MPMOptions):
             gs.raise_exception("`mpm_options` should be an instance of `MPMOptions`.")
@@ -273,7 +284,7 @@ class Scene(RBC):
         else:
             if sim_options.requires_grad and gs.use_ndarray:
                 gs.logger.info(
-                    "Use GsTaichi dynamic array mode while enabling gradient computation is not recommended. Please "
+                    "Use Quadrants dynamic array mode while enabling gradient computation is not recommended. Please "
                     "enable performance mode at init for efficiency, i.e. 'gs.init(..., performance_mode=True)'."
                 )
         if rigid_options.box_box_detection is None:
@@ -303,6 +314,10 @@ class Scene(RBC):
             self._visualizer.destroy()
             self._visualizer = None
 
+        if getattr(self, "_sim", None) is not None:
+            self._sim.destroy()
+            self._sim = None
+
         # Stop tracking this scene
         try:
             gs._scene_registry.remove(weakref.ref(self))
@@ -318,6 +333,7 @@ class Scene(RBC):
         surface: Surface | None = None,
         visualize_contact: bool = False,
         vis_mode: str | None = None,
+        name: str | None = None,
     ):
         """
         Add an entity to the scene.
@@ -333,9 +349,14 @@ class Scene(RBC):
         surface : gs.surfaces.Surface | None, optional
             The surface of the entity. If None, use ``gs.surfaces.Default()``.
         visualize_contact : bool
-            Whether to visualize contact forces applied to this entity as arrows in the viewer and rendered images. Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
+            Whether to visualize contact forces applied to this entity as arrows in the viewer and rendered images.
+            Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
         vis_mode : str | None, optional
-            The visualization mode of the entity. This is a handy shortcut for setting `surface.vis_mode` without explicitly creating a surface object.
+            The visualization mode of the entity. This is a handy shortcut for setting `surface.vis_mode` without
+            explicitly creating a surface object.
+        name : str | None, optional
+            User-specified name for the entity. If not provided, an auto-generated name will be assigned
+            based on the morph type and entity UID (e.g., "box_a1b2c3d4"). Must be unique within the scene.
 
         Returns
         -------
@@ -373,17 +394,17 @@ class Scene(RBC):
         if isinstance(morph_for_checks, (gs.morphs.Box, gs.morphs.Cylinder, gs.morphs.Terrain)):
             surface.smooth = False
 
-        if isinstance(morph_for_checks, (gs.morphs.URDF, gs.morphs.MJCF, gs.morphs.Terrain)):
-            if not isinstance(material, (gs.materials.Rigid, gs.materials.Hybrid)):
+        if isinstance(morph_for_checks, (gs.morphs.URDF, gs.morphs.MJCF, gs.morphs.USD, gs.morphs.Terrain)):
+            if not isinstance(material, (gs.materials.Kinematic, gs.materials.Hybrid)):
                 gs.raise_exception(f"Unsupported material for morph: {material} and {morph_for_checks}.")
 
         if surface.double_sided is None:
-            surface.double_sided = isinstance(material, gs.materials.PBD.Cloth)
+            surface.double_sided = isinstance(material, (gs.materials.PBD.Cloth, gs.materials.FEM.Cloth))
 
         if vis_mode is not None:
             surface.vis_mode = vis_mode
         # validate and populate default surface.vis_mode considering morph type
-        if isinstance(material, (gs.materials.Rigid, gs.materials.Tool)):
+        if isinstance(material, (gs.materials.Kinematic, gs.materials.Tool)):
             if surface.vis_mode is None:
                 surface.vis_mode = "visual"
 
@@ -459,7 +480,7 @@ class Scene(RBC):
                 if m.convexify is None:
                     m.convexify = isinstance(material, gs.materials.Rigid)
 
-        entity = self._sim._add_entity(morph, material, surface, visualize_contact)
+        entity = self._sim._add_entity(morph, material, surface, visualize_contact, name)
 
         return entity
 
@@ -467,12 +488,48 @@ class Scene(RBC):
     def add_stage(
         self,
         morph: gs.morphs.USD,
-        vis_mode: Literal["visual", "collision"] = "visual",
+        material: Material | None = None,
+        surface: Surface | None = None,
         visualize_contact: bool = False,
+        vis_mode: Literal["visual", "collision"] = "visual",
     ):
-        from genesis.utils.usd import import_from_stage
+        """
+        Add a stage to the scene.
 
-        return import_from_stage(self, morph.file, vis_mode, morph, visualize_contact)
+        Parameters
+        ----------
+        morph : gs.morphs.USD
+            The stage to add to the scene.
+        material : gs.materials.Material | None, optional
+            The material of the stage. If None, use ``gs.materials.Rigid()`` for all morphs.
+        surface : gs.surfaces.Surface | None, optional
+            The surface of the stage. If None, use ``gs.surfaces.Default()`` for all morphs.
+        visualize_contact : bool
+            Whether to visualize contact forces applied to this stage as arrows in the viewer and rendered images.
+            Note that this will not be displayed in images rendered by camera using the `RayTracer` renderer.
+        vis_mode : str | None, optional
+            The visualization mode of the stage. This is a handy shortcut for setting `surface.vis_mode` without
+            explicitly creating a surface object.
+
+        Returns
+        -------
+        entities : List[genesis.Entity]
+            The created entities.
+        """
+        entity_morphs = []
+        if isinstance(morph, gs.morphs.USD):
+            from genesis.utils.usd import parse_usd_stage
+
+            # Return a list of `gs.morphs.USD` for each parsed rigid entity in the stage.
+            entity_morphs = parse_usd_stage(morph)
+        else:
+            gs.raise_exception(f"Unsupported morph: {morph}.")
+
+        entities = []
+        for entity_morph in entity_morphs:
+            entities.append(self.add_entity(entity_morph, material, surface, visualize_contact, vis_mode))
+
+        return entities
 
     @gs.assert_unbuilt
     def add_mesh_light(
@@ -945,9 +1002,6 @@ class Scene(RBC):
 
         if update_visualizer:
             self._visualizer.update(force=False, auto=refresh_visualizer)
-            # Update IPC GUI if enabled
-            if hasattr(self, "_ipc_gui_enabled") and self._ipc_gui_enabled:
-                self._sim._coupler.update_ipc_gui()
 
         if self.profiling_options.show_FPS:
             self.FPS_tracker.step()
@@ -1286,7 +1340,7 @@ class Scene(RBC):
     def _backward(self):
         """
         At this point, all the scene states the simulation run should have been filled with gradients.
-        Next, we run backward from scene state back to scene's internal taichi variables, then back through time.
+        Next, we run backward from scene state back to scene's internal# Quadrants variables, then back through time.
         """
 
         if not self._backward_ready:
@@ -1301,7 +1355,7 @@ class Scene(RBC):
 
     def dump_ckpt_to_numpy(self) -> dict[str, np.ndarray]:
         """
-        Collect every Taichi field in the **scene and its active solvers** and
+        Collect every Quadrants field in the **scene and its active solvers** and
         return them as a flat ``{key: ndarray}`` dictionary.
 
         Returns
@@ -1312,7 +1366,7 @@ class Scene(RBC):
         arrays: dict[str, np.ndarray] = {}
 
         for name, value in self.__dict__.items():
-            if isinstance(value, (ti.Field, ti.Ndarray)):
+            if isinstance(value, (qd.Field, qd.Ndarray)):
                 arrays[".".join((self.__class__.__name__, name))] = value.to_numpy()
 
         for solver in self.active_solvers:
@@ -1352,7 +1406,7 @@ class Scene(RBC):
         arrays = state["arrays"]
 
         for name, value in self.__dict__.items():
-            if isinstance(value, (ti.Field, ti.Ndarray)):
+            if isinstance(value, (qd.Field, qd.Ndarray)):
                 key = ".".join((self.__class__.__name__, name))
                 if key in arrays:
                     value.from_numpy(arrays[key])
@@ -1463,6 +1517,49 @@ class Scene(RBC):
         return self._sim.entities
 
     @property
+    def entity_names(self) -> tuple[str, ...]:
+        """
+        Get the names of all entities in the scene.
+
+        Returns
+        -------
+        tuple[str, ...]
+            Tuple of entity names in order of creation.
+        """
+        return tuple(entity.name for entity in self.entities)
+
+    def get_entity(self, name: str | None = None, *, uid: str | None = None) -> "Entity":
+        """
+        Get an entity by name or UID. Raises an exception if not found.
+
+        Parameters
+        ----------
+        name : str, optional
+            The exact name of the entity to find.
+        uid : str, optional
+            The short UID (7-character) of the entity to find.
+
+        Returns
+        -------
+        Entity
+            The matching entity.
+        """
+        if not ((name is None) ^ (uid is None)):
+            gs.raise_exception("Please specify either one argument between `name` or `uid`.")
+
+        if name is not None:
+            try:
+                return next(entity for entity in self.entities if entity.name == name)
+            except StopIteration as e:
+                gs.raise_exception_from(f"Entity not found for name: '{name}'.", e)
+        else:  # uid is not None
+            matches = [entity for entity in self.entities if entity.uid.match(uid, short_only=True)]
+            if matches:
+                (match,) = matches
+                return match
+            gs.raise_exception(f"Entity not found for uid: '{uid}'.")
+
+    @property
     def emitters(self):
         """All the emitters in the scene."""
         return self._emitters
@@ -1476,6 +1573,11 @@ class Scene(RBC):
     def rigid_solver(self):
         """The scene's `rigid_solver`, managing all the `RigidEntity` in the scene."""
         return self._sim.rigid_solver
+
+    @property
+    def kinematic_solver(self):
+        """The scene's `kinematic_solver`, managing all the kinematic (visualization-only) entities in the scene."""
+        return self._sim.kinematic_solver
 
     @property
     def mpm_solver(self):

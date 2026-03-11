@@ -25,7 +25,7 @@
   - [2025-01-08] v0.2.1 릴리스 🎊 🎉
   - [2025-01-08] [Discord](https://discord.gg/nukCuhB47p) 및 [Wechat](https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ) 그룹을 생성했습니다.
   - [2024-12-25] 레이 트레이싱 렌더러를 지원하는 [docker](https://www.google.com/search?q=%23docker) 추가
-  - [2024-12-24] [제네시스 기여](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md) 가이드라인 추가
+  - [2024-12-24] [제네시스 기여](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md) 가이드라인 추가
 
 ## Table of Contents
 
@@ -93,6 +93,45 @@ git clone https://github.com/Genesis-Embodied-AI/Genesis.git
 cd Genesis
 pip install -e ".[dev]"
 ```
+HEAD를 이동한 후에는 모든 의존성과 엔트리포인트가 최신 상태인지 확인하기 위해 `pip install -e ".[dev]"`를 체계적으로 실행하는 것을 권장합니다.
+
+### uv 사용
+
+[uv](https://docs.astral.sh/uv/)는 빠른 Python 패키지 및 프로젝트 관리자입니다.
+
+**uv 설치:**
+```bash
+# macOS 및 Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+**uv로 빠르게 시작:**
+```bash
+git clone https://github.com/Genesis-Embodied-AI/Genesis.git
+cd Genesis
+uv sync
+```
+
+그 다음, 플랫폼에 맞는 PyTorch를 설치합니다:
+
+```bash
+# NVIDIA GPU (예: CUDA 12.6)
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+
+# CPU 전용 (Linux/Windows)
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+# Apple Silicon (Metal/MPS)
+uv pip install torch
+```
+
+예제 실행:
+```bash
+uv run examples/rigid/single_franka.py
+```
 
 ## Docker
 
@@ -140,7 +179,7 @@ docker run -it --network=host \
  genesis-amd
 ```
 
-예제는 `/workspace/examples` 경로에서 접근할 수 있습니다. 참고: AMD 사용자는 Vulkan 백엔드를 사용해야 합니다. 즉, Genesis를 초기화하려면 `gs.init(vulkan)`을 호출해야 합니다.
+예제는 `/workspace/examples` 경로에서 접근할 수 있습니다. 참고: AMD 사용자는 ROCm (HIP) 백엔드를 사용해야 합니다. 즉, Genesis를 초기화하려면 `gs.init(backend=gs.amdgpu)`을 호출해야 합니다.
 
 ## 문서
 
@@ -154,7 +193,7 @@ Genesis 프로젝트는 오픈 소스 및 협력 프로젝트입니다. 다음�
 - GitHub Issues를 통한 **버그 리포트 (Bug Reports)**.
 - Genesis의 사용성을 향상시키기 위한 **제안 (Suggestions)**.
 
-자세한 내용은 [기여 가이드](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/CONTRIBUTING.md)를 참조하세요.
+자세한 내용은 [기여 가이드](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md)를 참조하세요.
 
 ## 지원
 

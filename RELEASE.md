@@ -1,43 +1,188 @@
 # Genesis Release Note
 
+## 0.4.1
+
+This release mainly improves experimental IPC coupler integration. Avatar entity has been re-introduced after being broken for months. Finally, Quadrants' dynamic arrays are now support on Apple Metal to avoid systematic scene compilation.
+
+### Breaking changes
+
+* More consistent IPC coupler API. (@duburcqa) (#2446)
+
+### New Features
+
+* #2332 Implement Local Offset in Inverse Kinematics (@alexis779) (#2333)
+* Add support of batching to IPC articulated bodies. (@Roushelfy, @duburcqa) (#2448, #2454)
+* Add support per-entity contact friction and resistance to IPC coupler. (@Roushelfy, @duburcqa) (#2473, #2479)
+* Enable Quadrants dynamic array on Apple Metal. (@hughperkins) (#2498)
+* Add avatar (kinematic) entity and refactor rigid entity. (@duburcqa) (#2504, #2508)
+
+### Bug Fixes
+
+* Fix support of Numpy 2.4. (@duburcqa) (#2432, #2433)
+* Fix geometries misclassified as non-convex. (@duburcqa) (#2442)
+* Fix merge fixed links. (@duburcqa, @YilingQiao) (#2441, #2475)
+* Fix wrong type for gs.materials.Rigid.gravity_compensation. (@nimrod-gileadi) (#2469)
+* Fix UV size mismatch causing USD parsing hard failure. (@alanray-tech) (#2480)
+* Fix support of convex decomposition baked in glTF. (@duburcqa) (#2493)
+* Fix mass getter for PBD entities. (@YilingQiao) (#2503)
+* Fix Apple Metal bug causing nan. (@hughperkins) (#2481)
+* Raise exception in case of invalid IPC coupler options. (@duburcqa) (#2450, #2451, #2486, #2492)
+
+### Miscellaneous
+
+* Refactor internal implementation of IPC coupler. (@duburcqa, @ACMLCZH, @Roushelfy) (#2453, #2455, #2462, #2463, #2465, #2478, #2484, #2485, #2495, #2496)
+* More comprehensive IPC coupler unit tests and tune examples. (@duburcqa) (#2444, #2458, #2474, #2488)
+* Add support of unspecified inertia origin in URDF. (@duburcqa) (#2499)
+* Add torch profile integration to performance benchmarks. (@hughperkins) (#2421, #2466)
+* Significantly speedup contact-rich and dynamic simulations. (@hughperkins) (#2406, #2467)
+* More comprehensive performance benchmarks. (@hughperkins) (#2470)
+* Aggregate speed benchmark wandb uploads into a single run. (@hughperkins) (#2482)
+
+## 0.4.1
+
+This release polishes our newly introduced USD parser and external interactive viewer plugin mechanism. Beyond that, the performance of the simulation has been significantly improved for collision-heavy scenes (up to 30%) and robots using capsule/sphere collision geometries (up to 20%).
+
+### Breaking changes
+
+* Migrate from GsTaichi to Quadrants. (@hughperkins, @duburcqa) (#2399, #2409)
+
+### New Features
+
+* Replace partial broken Vulkan backend by (experimental) AMD ROCm backend. (@duburcqa) (#2393, #2402)
+* Support ArticulationRoot-free robots and instanced prims in USD. (@alanray-tech) (#2411)
+* Add KinematicContactProbe sensor. (@Milotrince) (#2389)
+* Add support of USD in 'gs view'. (@duburcqa) (#2423)
+* Add IPC Robot-Cloth Coupling. (@Roushelfy, @alanray-tech) (#2427, #2352)
+
+### Bug Fixes
+
+* Fix weld and connect equality constraints. (@duburcqa) (#2390)
+* Fix color overwrite for primitive geometries in URDF. (@duburcqa) (#2403)
+* Fix merging chained fixed links. (@duburcqa) (#2404, #2429)
+* Fix handling of unspecified spatial inertia properties in USD. (@alanray-tech) (#2401)
+* Tune GJK to avoid false negative collision detection. (@SonSang) (#2419)
+* Fix object slowly falling when holding object using mouse interaction plugin. (@Milotrince) (#2418)
+* Fix interactive viewer deadlock on Wayland. (@alexis779) (#2422)
+* Fix default file extension for interactive viewer save. (@duburcqa) (#2424)
+* Fix viewer raycast kernel compilation race condition. (@duburcqa) (#2430)
+
+### Miscellaneous
+
+* Speed up linesearch via reducing global reads by recomputing quad. (@erizmr) (#2384)
+* Speed up capsule-capsule and capsule-sphere collision detection. (@hughperkins) (#2363, #2413, #2414)
+* Lazy-initialize SDF pre-processing in RigidGeom. (@duburcqa) (#2392)
+* Add uv installation instructions to translated READMEs. (@antoinedandi) (#2416)
+* Fix support of fastcache for raycast kernels. (@duburcqa) (#2417)
+
+## 0.3.14
+
+This release mainly focuses on usability, by extending support of USD and introducing a new external plugin mechanism for the interactive viewer. Besides, the performance of the simulation has been significantly improved for collision-heavy scenes (up to 30%).
+
+### New Features
+
+* Introduce interactive viewer plugins. (@Milotrince) (#2004, #2357)
+* Add naming logics to entities. (@YilingQiao) (#2303)
+* Support rendering textures for USD scenes. (@ACMLCZH) (#2286)
+* Add invalid spatial inertia diagnosis. (@duburcqa) (#2297, #2321, #2367)
+
+### Bug Fixes
+
+* Fix wrong default sampler for SPH solver causing numerical stability issues. (@erizmr) (#2280)
+* Fix render destroy. (@nimrod-gileadi, @duburcqa) (#2282, #2358)
+* Fix IPC Coupler. (@duburcqa) (#2299)
+* Fix batched numpy 'euler_to_R' geom util. (@Kashu7100) (#2306)
+* Fix glTF mesh loading. (@duburcqa) (#2296, #2311, #2316, #2329)
+* Fix 'Mesh.convert_to_zup' by applying scaling out-of-place. (@duburcqa)
+* Fix rigid body entity hibernation mechanism. (@YilingQiao) (#2294)
+* Fix DFSPH solver. (@erizmr) (#2302)
+* Fix parsing material of primitive geometries in MJCF files. (@ACMLCZH) (#2328)
+* Fix 'draw_debug_frames' after PR#1869. (@duburcqa) (#2330)
+* Fix compatibility with 'trimesh<4.6.0'. (@duburcqa) (#2334)
+* Fix linesearch edge-case fallback. (@erizmr) (#2339)
+* Fix mujoco-compatible GJK multi-contact for box primitive. (@hughperkins) (#2341)
+* FIX FEM entity rendering with Raytracer backend. (@duburcqa) (#2356)
+* Fix combining Rasterizer-based camera sensors and interactive viewer. (@YilingQiao) (#2351)
+
+### Miscellaneous
+
+* Track mesh UVs in FEM/PBD solvers for rendering of deformable entities. (@alelievr) (#2323)
+* Support scrolling menu in 'gs view'. (@Kashu7100) (#2335)
+* Add memory to CI performance monitoring report. (@hughperkins) (#2281, #2291, #2293, #2295, #2298, #2300, #2312, #2315, #2320)
+* Improve support of Linux ARM. (@duburcqa) (#2317)
+* Clearer error message of 'RigidEntity.(get_joint|get_link)'. (@Kashu7100) (#2313)
+* Add Markdown Files to Facilitate AI Tools. (@YilingQiao) (#2305)
+* Support --record in the RL stage in Manipulation example (@SnakeOnex) (#2344)
+* More robust OpenGL context initialisation for Rasterizer. (@duburcqa) (#2354)
+* Add benchmark for Unitree G1. (@hughperkins) (#2310)
+* Recomputing inertia for primitive geometries using analytical formula. (@duburcqa) (#2337)
+* Speed up linesearch via batched alpha evals and reduced global memory access. (@erizmr) (#2350)
+* Disable shadow and plane reflection when using software rendering. (@duburcqa) (#2365)
+* Workaround for 'pyglet' bug. (@duburcqa) (#2385)
+
+## 0.3.13
+
+This small release adds user-friendly diagnosis of invalid Rigid physics properties and improves support of GLTF meshes.
+
+### Breaking changes
+
+* Apply 'FileMorph.file_meshes_are_zup' to all meshes including GLTF. (@duburcqa) (#2275)
+* Do not officially support importing GLTF morph Mesh as Z-UP. (@duburcqa) (#2279)
+
+### New Features
+
+* Add Magnetometer measurement to IMU Sensor. (@sunkmechie) (#2265)
+* Check validity of links spatial inertia and support forcing computation from geoms. (@duburcqa) (#2273, #2276)
+
+### Bug Fixes
+
+* Improve support of attached RigidEntity. (@duburcqa) (#2256, #2259)
+* Fix attaching RayTracer camera sensor. (@duburcqa) (#2266)
+* Fix empty data when adding more than 3 Raycast Sensors. (@JackLowry) (#2268)
+* Fix Raycast Sensor for batched environments. (@d-corsi) (#2269)
+* More robust filtering of self-collision in neutral configuration.  (@duburcqa) (#2278)
+
+### Miscellaneous
+
+* Improve performance and add torch support to 'utils.geom.slerp'. (@Kashu7100) (#2260)
+
 ## 0.3.12
 
 This PR focuses on performance improvements (x4 faster for complex scenes with 64 < n_dofs < 96 and n_envs=4096 compared to 0.3.10). Besides, initial support of heterogenous object and USD stage import for rigid body simulation has been introduced.
 
 ### New Features
 
-* [FEATURE] Add method to compute axis-aligned bounding boxes of visual geometries. (@duburcqa) (#2185)
-* [FEATURE] Add partial support of batched camera sensor with Rasterizer. (@Narsil) (#2207, #2212)
-* [FEATURE] Add support for attaching MPM particles to rigid links. (@YilingQiao) (#2205)
-* [FEATURE] Add support of USD import for Rigid Body. (@alanray-tech) (#2067)
-* [FEATURE] Add support of batched textures to BatchRenderer. (@ACMLCZH) (#2077)
-* [FEATURE] Add support of fisheye camera mode to BatchRenderer. (@ACMLCZH) (#2138)
-* [FEATURE] Add batched simulation of heterogeneous objects. (@YilingQiao) (#2202)
-* [FEATURE] Filter out self-collision pairs active in neutral configuration. (@duburcqa) (#2251)
+* Add method to compute axis-aligned bounding boxes of visual geometries. (@duburcqa) (#2185)
+* Add partial support of batched camera sensor with Rasterizer. (@Narsil) (#2207, #2212)
+* Add support for attaching MPM particles to rigid links. (@YilingQiao) (#2205)
+* Add support of USD import for Rigid Body. (@alanray-tech) (#2067)
+* Add support of batched textures to BatchRenderer. (@ACMLCZH) (#2077)
+* Add support of fisheye camera mode to BatchRenderer. (@ACMLCZH) (#2138)
+* Add batched simulation of heterogeneous objects. (@YilingQiao) (#2202)
+* Filter out self-collision pairs active in neutral configuration. (@duburcqa) (#2251)
 
 ### Bug Fixes
 
-* [BUG FIX] Fix zero-copy for fields on Apple Metal. (@duburcqa) (#2188, #2223)
-* [BUG FIX] Fix compatibility with 'numpy<2.0'. (@duburcqa) (#2197)
-* [BUG FIX] Fix invalid default particle sampler on Linux ARM. (@duburcqa) (#2211)
-* [BUG FIX] Fix 'RigidGeom.get_(pos|quat)' invalid shape. (@duburcqa) (#2218)
-* [BUG FIX] Fix various sensor bugs and add zero-copy to contact force sensors. (@duburcqa) (#2232, #2235)
-* [BUG FIX] Clear dynamic weld at scene reset. (@YilingQiao) (#2233)
-* [BUG FIX] Fix viewer not closed at scene destroy if running in background thread. (@duburcqa) (#2236)
-* [BUG FIX] More robust handling of corrupted cache. (@duburcqa) (#2241)
+* Fix zero-copy for fields on Apple Metal. (@duburcqa) (#2188, #2223)
+* Fix compatibility with 'numpy<2.0'. (@duburcqa) (#2197)
+* Fix invalid default particle sampler on Linux ARM. (@duburcqa) (#2211)
+* Fix 'RigidGeom.get_(pos|quat)' invalid shape. (@duburcqa) (#2218)
+* Fix various sensor bugs and add zero-copy to contact force sensors. (@duburcqa) (#2232, #2235)
+* Clear dynamic weld at scene reset. (@YilingQiao) (#2233)
+* Fix viewer not closed at scene destroy if running in background thread. (@duburcqa) (#2236)
+* More robust handling of corrupted cache. (@duburcqa) (#2241)
 
 ### Miscellaneous
 
-* [MISC] More intuitive visualisation of camera frustum in interactive viewer. (@duburcqa) (#2180)
-* [MISC] Remove broken and unmaintained Avatar Solver. (@duburcqa) (#2181)
-* [MISC] Speedup non-tiled hessian cholesky factor and solve. (@duburcqa) (#2182, #2183)
-* [MISC] Force public getters to return by-value to avoid mistake. (@duburcqa) (#2184)
-* [MISC] Improve CI infrastructure. (@hughperkins, @duburcqa) (#1981, #2166, #2190, #2194, #2195, #2242, #2245, #2250)
-* [MISC] Add Ruff format. (@Narsil) (#2213, #2214, #2215)
-* [MISC] Store texture path for primitive morphs as metadata. (@Rush2k) (#2227)
-* [MISC] Improve import logics of y-up vs z-up file meshes. (@AnisB) (#2237)
-* [MISC] Simplify boolean contact sensors update logics. (@duburcqa) (#2238)
-* [MISC] Rigid methods set_qpos,set_dofs_position now clear error code. (@duburcqa) (#2253)
+* More intuitive visualisation of camera frustum in interactive viewer. (@duburcqa) (#2180)
+* Remove broken and unmaintained Avatar Solver. (@duburcqa) (#2181)
+* Speedup non-tiled hessian cholesky factor and solve. (@duburcqa) (#2182, #2183)
+* Force public getters to return by-value to avoid mistake. (@duburcqa) (#2184)
+* Improve CI infrastructure. (@hughperkins, @duburcqa) (#1981, #2166, #2190, #2194, #2195, #2242, #2245, #2250)
+* Add Ruff format. (@Narsil) (#2213, #2214, #2215)
+* Store texture path for primitive morphs as metadata. (@Rush2k) (#2227)
+* Improve import logics of y-up vs z-up file meshes. (@AnisB) (#2237)
+* Simplify boolean contact sensors update logics. (@duburcqa) (#2238)
+* Rigid methods set_qpos,set_dofs_position now clear error code. (@duburcqa) (#2253)
 
 ## 0.3.11
 
@@ -91,10 +236,13 @@ Small release mainly fixing bugs.
 
 Small release mainly polishing features that were introduced in previous release.
 
+### Breaking changes
+
+* Replace SDF fallback by GJK. (@duburcqa) (#2081)
+* Improve inertial estimation if undefined. (@YilingQiao) (#2100)
+
 ### New Features
 
-* [CHANGING] Replace SDF fallback by GJK. (@duburcqa) (#2081)
-* [CHANGING] Improve inertial estimation if undefined. (@YilingQiao) (#2100)
 * Add support of boolean masking as index. (@duburcqa) (#2087)
 * Fix and improve merging of rigid entities. (@duburcqa) (#2098)
 
@@ -118,10 +266,13 @@ Small release mainly polishing features that were introduced in previous release
 
 The performance of data accessors have been dramatically improved by leveraging zero-copy memory sharing between GsTaichi and Torch. Beyond that, the robustness of the default contact algorithm has been improved, and differentiable forward dynamics for Rigid Body simulation is not partially available. Last, but not least, GsTaichi dynamic array mode is finally enabled back by default!
 
+### Breaking changes
+
+* More robust MPR+SDF collision detection algorithm. (@duburcqa) (#1983, #1985)
+* Disable box-box by default. (@duburcqa) (#1982)
+
 ### New Features
 
-* [CHANGING] More robust MPR+SDF collision detection algorithm. (@duburcqa) (#1983, #1985)
-* [CHANGING] Disable box-box by default. (@duburcqa) (#1982)
 * Enable back GsTaichi dynamic array mode by default except for MacOS. (@duburcqa) (#1977)
 * Add error code to rigid solver. (@duburcqa) (#1979)
 * Add option to force batching of fixed vertices. (@duburcqa) (#1998)

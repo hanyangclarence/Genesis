@@ -4,7 +4,7 @@ import torch
 
 import genesis as gs
 from genesis.utils.geom import R_to_quat
-from genesis.utils.misc import ti_to_torch, ti_to_numpy, tensor_to_array
+from genesis.utils.misc import qd_to_torch, qd_to_numpy, tensor_to_array
 from genesis.utils import set_random_seed
 
 from .utils import assert_allclose
@@ -154,8 +154,8 @@ def test_diff_contact():
 
     # Compute analytical gradients of the geoms position and quaternion
     collider.backward(dL_dposition, dL_dnormal, dL_dpenetration)
-    dL_dpos = ti_to_torch(solver.geoms_state.pos.grad)
-    dL_dquat = ti_to_torch(solver.geoms_state.quat.grad)
+    dL_dpos = qd_to_torch(solver.geoms_state.pos.grad)
+    dL_dquat = qd_to_torch(solver.geoms_state.quat.grad)
 
     ### Compute directional derivatives along random directions
     FD_EPS = 1e-5
@@ -221,8 +221,8 @@ def test_diff_contact():
 @pytest.mark.required
 @pytest.mark.precision("64")
 def test_diff_solver(monkeypatch):
-    from genesis.engine.solvers.rigid.constraint_solver_decomp import func_init_solver, func_solve
-    from genesis.engine.solvers.rigid.rigid_solver_decomp import kernel_step_1
+    from genesis.engine.solvers.rigid.constraint.solver import func_solve_init, func_solve_body
+    from genesis.engine.solvers.rigid.rigid_solver import kernel_step_1
 
     RTOL = 1e-4
 
@@ -253,7 +253,7 @@ def test_diff_solver(monkeypatch):
 
     # Monkeypatch the constraint resolve function to avoid overwriting the necessary information for computing gradients.
     def constraint_solver_resolve():
-        func_init_solver(
+        func_solve_init(
             dofs_info=rigid_solver.dofs_info,
             dofs_state=rigid_solver.dofs_state,
             entities_info=rigid_solver.entities_info,
@@ -261,7 +261,7 @@ def test_diff_solver(monkeypatch):
             rigid_global_info=rigid_solver._rigid_global_info,
             static_rigid_sim_config=rigid_solver._static_rigid_sim_config,
         )
-        func_solve(
+        func_solve_body(
             entities_info=rigid_solver.entities_info,
             dofs_state=rigid_solver.dofs_state,
             constraint_state=constraint_solver.constraint_state,
@@ -309,23 +309,23 @@ def test_diff_solver(monkeypatch):
         rigid_solver.dofs_state.acc_smooth.from_numpy(updated_acc_smooth[..., None])
         constraint_solver.resolve()
 
-        output_qacc = ti_to_torch(constraint_solver.qacc)
+        output_qacc = qd_to_torch(constraint_solver.qacc)
         return ((output_qacc - target_qacc) ** 2).mean()
 
-    init_input_mass = ti_to_numpy(rigid_solver._rigid_global_info.mass_mat, copy=True)
-    init_input_jac = ti_to_numpy(constraint_solver.constraint_state.jac, copy=True)
-    init_input_aref = ti_to_numpy(constraint_solver.constraint_state.aref, copy=True)
-    init_input_efc_D = ti_to_numpy(constraint_solver.constraint_state.efc_D, copy=True)
-    init_input_force = ti_to_numpy(rigid_solver.dofs_state.force, copy=True)
+    init_input_mass = qd_to_numpy(rigid_solver._rigid_global_info.mass_mat, copy=True)
+    init_input_jac = qd_to_numpy(constraint_solver.constraint_state.jac, copy=True)
+    init_input_aref = qd_to_numpy(constraint_solver.constraint_state.aref, copy=True)
+    init_input_efc_D = qd_to_numpy(constraint_solver.constraint_state.efc_D, copy=True)
+    init_input_force = qd_to_numpy(rigid_solver.dofs_state.force, copy=True)
 
     # Initial output of the constraint solver
     set_random_seed(0)
-    init_output_qacc = ti_to_torch(constraint_solver.qacc)
+    init_output_qacc = qd_to_torch(constraint_solver.qacc)
     target_qacc = torch.from_numpy(np.random.randn(*init_output_qacc.shape)).to(device=gs.device)
     target_qacc = target_qacc * init_output_qacc.abs().mean()
 
     # Solve the constraint solver and get the output
-    output_qacc = ti_to_torch(constraint_solver.qacc, copy=True).requires_grad_(True)
+    output_qacc = qd_to_torch(constraint_solver.qacc, copy=True).requires_grad_(True)
 
     # Compute loss and gradient of the output
     loss = ((output_qacc - target_qacc) ** 2).mean()
@@ -335,11 +335,11 @@ def test_diff_solver(monkeypatch):
     constraint_solver.backward(dL_dqacc)
 
     # Fetch gradients of the input variables
-    dL_dM = ti_to_numpy(constraint_solver.constraint_state.dL_dM)
-    dL_djac = ti_to_numpy(constraint_solver.constraint_state.dL_djac)
-    dL_daref = ti_to_numpy(constraint_solver.constraint_state.dL_daref)
-    dL_defc_D = ti_to_numpy(constraint_solver.constraint_state.dL_defc_D)
-    dL_dforce = ti_to_numpy(constraint_solver.constraint_state.dL_dforce)
+    dL_dM = qd_to_numpy(constraint_solver.constraint_state.dL_dM)
+    dL_djac = qd_to_numpy(constraint_solver.constraint_state.dL_djac)
+    dL_daref = qd_to_numpy(constraint_solver.constraint_state.dL_daref)
+    dL_defc_D = qd_to_numpy(constraint_solver.constraint_state.dL_defc_D)
+    dL_dforce = qd_to_numpy(constraint_solver.constraint_state.dL_dforce)
 
     ### Compute directional derivatives along random directions
     FD_EPS = 1e-3

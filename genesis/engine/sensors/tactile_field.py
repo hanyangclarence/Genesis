@@ -10,7 +10,7 @@ Migrated from Genesis v0.3.3 to v0.3.10.
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Type
 
-import gstaichi as ti
+import quadrants as qd
 import numpy as np
 import torch
 
@@ -106,7 +106,7 @@ class TactileFieldSensorMetadata(SharedSensorMetadata):
 # ==================== Sensor Class ====================
 
 @register_sensor(TactileFieldSensorOptions, TactileFieldSensorMetadata, tuple)
-@ti.data_oriented
+@qd.data_oriented
 class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
     """
     Dense tactile force field sensor using SDF-based penetration depth computation.

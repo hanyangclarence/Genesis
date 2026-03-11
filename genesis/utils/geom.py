@@ -6,96 +6,123 @@ import numba as nb
 import torch
 import torch.nn.functional as F
 
-import gstaichi as ti
+import quadrants as qd
 
 import genesis as gs
 
 # ------------------------------------------------------------------------------------
-# ------------------------------------- taichi ----------------------------------------
+# ------------------------------------- Quadrants ----------------------------------------
 # ------------------------------------------------------------------------------------
 
 
-@ti.func
-def ti_xyz_to_quat(xyz):
+@qd.func
+def qd_i_cross_vec(vec):
+    return qd.Vector([0.0, -vec[2], vec[1]], dt=gs.qd_float)
+
+
+@qd.func
+def qd_j_cross_vec(vec):
+    return qd.Vector([vec[2], 0.0, -vec[0]], dt=gs.qd_float)
+
+
+@qd.func
+def qd_k_cross_vec(vec):
+    return qd.Vector([-vec[1], vec[0], 0.0], dt=gs.qd_float)
+
+
+@qd.func
+def qd_transform_by_quat_fast(v, quat):
+    """
+    Assumptions:
+    - quat must be normalized
+    """
+    q_w, q_x, q_y, q_z = quat
+    u = qd.Vector([q_x, q_y, q_z])
+    t = 2.0 * u.cross(v)
+    return v + q_w * t + u.cross(t)
+
+
+@qd.func
+def qd_xyz_to_quat(xyz):
     """
     Convert intrinsic x-y-z Euler angles to quaternion.
     """
     ai, aj, ak = 0.5 * xyz[2], -0.5 * xyz[1], 0.5 * xyz[0]
-    si, sj, sk = ti.sin(ai), ti.sin(aj), ti.sin(ak)
-    ci, cj, ck = ti.cos(ai), ti.cos(aj), ti.cos(ak)
+    si, sj, sk = qd.sin(ai), qd.sin(aj), qd.sin(ak)
+    ci, cj, ck = qd.cos(ai), qd.cos(aj), qd.cos(ak)
     cc, cs = ci * ck, ci * sk
     sc, ss = si * ck, si * sk
 
-    quat = ti.Vector(
+    quat = qd.Vector(
         [
             +cj * cc + sj * ss,
             +cj * cs - sj * sc,
             -cj * ss - sj * cc,
             +cj * sc - sj * cs,
         ],
-        dt=gs.ti_float,
+        dt=gs.qd_float,
     )
     return quat
 
 
-@ti.func
-def ti_R_to_xyz(R, eps):
+@qd.func
+def qd_R_to_xyz(R, eps):
     """
     Convert a rotation matrix into intrinsic x-y-z Euler angles.
     """
-    xyz = ti.Vector.zero(gs.ti_float, 3)
+    xyz = qd.Vector.zero(gs.qd_float, 3)
 
-    cy = ti.sqrt(R[2, 2] ** 2 + R[1, 2] ** 2)
+    cy = qd.sqrt(R[2, 2] ** 2 + R[1, 2] ** 2)
     if cy > eps:
-        xyz[0] = -ti.atan2(R[1, 2], R[2, 2])
-        xyz[1] = -ti.atan2(-R[0, 2], cy)
-        xyz[2] = -ti.atan2(R[0, 1], R[0, 0])
+        xyz[0] = -qd.atan2(R[1, 2], R[2, 2])
+        xyz[1] = -qd.atan2(-R[0, 2], cy)
+        xyz[2] = -qd.atan2(R[0, 1], R[0, 0])
     else:
         xyz[0] = 0.0
-        xyz[1] = -ti.atan2(-R[0, 2], cy)
-        xyz[2] = -ti.atan2(-R[1, 0], R[1, 1])
+        xyz[1] = -qd.atan2(-R[0, 2], cy)
+        xyz[2] = -qd.atan2(-R[1, 0], R[1, 1])
     return xyz
 
 
-@ti.func
-def ti_rotvec_to_R(rotvec, eps):
-    R = ti.Matrix.identity(gs.ti_float, 3)
+@qd.func
+def qd_rotvec_to_R(rotvec, eps):
+    R = qd.Matrix.identity(gs.qd_float, 3)
 
     angle = rotvec.norm()
     if angle > eps:
-        c = ti.cos(angle)
-        s = ti.sqrt(1.0 - c**2)
+        c = qd.cos(angle)
+        s = qd.sqrt(1.0 - c**2)
         t = 1.0 - c
         x, y, z = rotvec / angle
 
-        R = ti.Matrix(
+        R = qd.Matrix(
             [
                 [t * x * x + c, t * x * y - z * s, t * x * z + y * s],
                 [t * x * y + z * s, t * y * y + c, t * y * z - x * s],
                 [t * x * z - y * s, t * y * z + x * s, t * z * z + c],
             ],
-            dt=gs.ti_float,
+            dt=gs.qd_float,
         )
 
     return R
 
 
-@ti.func
-def ti_rotvec_to_quat(rotvec, eps):
-    quat = ti.Vector.zero(gs.ti_float, 4)
+@qd.func
+def qd_rotvec_to_quat(rotvec, eps):
+    quat = qd.Vector.zero(gs.qd_float, 4)
 
     # We need to use [norm_sqr] instead of [norm] to avoid nan gradients in the backward pass. Even when theta = 0,
     # the gradient of [norm] operation is computed and used (note that the gradient becomes NaN when theta = 0). This
-    # is seemd to be a bug in Taichi autodiff @TODO: change back after the bug is fixed.
+    # is seemd to be a bug in Quadrants autodiff @TODO: change back after the bug is fixed.
     thetasq = rotvec.norm_sqr()
     if thetasq > (eps**2):
-        theta = ti.sqrt(thetasq)
+        theta = qd.sqrt(thetasq)
         theta_half = 0.5 * theta
-        c, s = ti.cos(theta_half), ti.sin(theta_half)
+        c, s = qd.cos(theta_half), qd.sin(theta_half)
 
         quat[0] = c
         xyz = s / theta * rotvec
-        for i in ti.static(range(3)):
+        for i in qd.static(range(3)):
             quat[i + 1] = xyz[i]
 
         # First order quaternion normalization is accurate enough yet necessary
@@ -106,12 +133,12 @@ def ti_rotvec_to_quat(rotvec, eps):
     return quat
 
 
-@ti.func
-def ti_quat_to_R(quat, eps):
+@qd.func
+def qd_quat_to_R(quat, eps):
     """
     Converts quaternion to 3x3 rotation matrix.
     """
-    R = ti.Matrix.identity(gs.ti_float, 3)
+    R = qd.Matrix.identity(gs.qd_float, 3)
 
     d = quat.norm_sqr()
     if d > eps:
@@ -122,26 +149,26 @@ def ti_quat_to_R(quat, eps):
         xx, xy, xz = x * xs, x * ys, x * zs
         yy, yz, zz = y * ys, y * zs, z * zs
 
-        R = ti.Matrix(
+        R = qd.Matrix(
             [
                 [1.0 - (yy + zz), xy - wz, xz + wy],
                 [xy + wz, 1.0 - (xx + zz), yz - wx],
                 [xz - wy, yz + wx, 1.0 - (xx + yy)],
             ],
-            dt=gs.ti_float,
+            dt=gs.qd_float,
         )
 
     return R
 
 
-@ti.func
-def ti_quat_to_xyz(quat, eps):
+@qd.func
+def qd_quat_to_xyz(quat, eps):
     """
     Convert a quaternion into intrinsic x-y-z Euler angles.
     """
-    roll = gs.ti_float(0.0)
-    pitch = gs.ti_float(0.0)
-    yaw = gs.ti_float(0.0)
+    roll = gs.qd_float(0.0)
+    pitch = gs.qd_float(0.0)
+    yaw = gs.qd_float(0.0)
 
     quat_norm_sqr = quat.norm_sqr()
     if quat_norm_sqr > eps:
@@ -154,48 +181,48 @@ def ti_quat_to_xyz(quat, eps):
 
         sinycosp = q_wz - q_xy
         cosycosp = 1.0 - (q_yy + q_zz)
-        cosp = ti.sqrt(cosycosp**2 + sinycosp**2)
+        cosp = qd.sqrt(cosycosp**2 + sinycosp**2)
 
-        pitch = ti.atan2(q_xz + q_wy, cosp)
+        pitch = qd.atan2(q_xz + q_wy, cosp)
         if cosp > eps:
-            roll = ti.atan2(q_wx - q_yz, 1.0 - (q_xx + q_yy))
-            yaw = ti.atan2(sinycosp, cosycosp)
+            roll = qd.atan2(q_wx - q_yz, 1.0 - (q_xx + q_yy))
+            yaw = qd.atan2(sinycosp, cosycosp)
         else:
-            yaw = ti.atan2(q_wz + q_xy, 1.0 - (q_xx + q_zz))
+            yaw = qd.atan2(q_wz + q_xy, 1.0 - (q_xx + q_zz))
 
-    return ti.Vector([roll, pitch, yaw], dt=gs.ti_float)
+    return qd.Vector([roll, pitch, yaw], dt=gs.qd_float)
 
 
-@ti.func
-def ti_quat_to_rotvec(quat, eps):
+@qd.func
+def qd_quat_to_rotvec(quat, eps):
     q_w, q_x, q_y, q_z = quat
-    rotvec = ti.Vector([q_x, q_y, q_z], dt=gs.ti_float)
+    rotvec = qd.Vector([q_x, q_y, q_z], dt=gs.qd_float)
 
     s2 = rotvec.norm()
     if s2 > eps:
-        angle = 2.0 * ti.atan2(s2, ti.abs(q_w))
+        angle = 2.0 * qd.atan2(s2, qd.abs(q_w))
         inv_sinc = angle / s2
         rotvec = (-1.0 if q_w < 0.0 else 1.0) * inv_sinc * rotvec
 
     return rotvec
 
 
-@ti.func
-def ti_trans_quat_to_T(trans, quat, eps):
-    T = ti.Matrix.identity(gs.ti_float, 4)
-    T[:3, :3] = ti_quat_to_R(quat, eps)
+@qd.func
+def qd_trans_quat_to_T(trans, quat, eps):
+    T = qd.Matrix.identity(gs.qd_float, 4)
+    T[:3, :3] = qd_quat_to_R(quat, eps)
     T[:3, 3] = trans
     return T
 
 
-@ti.func
-def ti_inv_quat(quat):
-    return ti.Vector([quat[0], -quat[1], -quat[2], -quat[3]], dt=gs.ti_float)
+@qd.func
+def qd_inv_quat(quat):
+    return qd.Vector([quat[0], -quat[1], -quat[2], -quat[3]], dt=gs.qd_float)
 
 
-@ti.func
-def ti_quat_mul_axis(q, axis):
-    return ti.Vector(
+@qd.func
+def qd_quat_mul_axis(q, axis):
+    return qd.Vector(
         [
             -q[1] * axis[0] - q[2] * axis[1] - q[3] * axis[2],
             +q[0] * axis[0] + q[2] * axis[2] - q[3] * axis[1],
@@ -205,96 +232,96 @@ def ti_quat_mul_axis(q, axis):
     )
 
 
-@ti.func
-def ti_quat_mul(u, v):
+@qd.func
+def qd_quat_mul(u, v):
     vu = u.outer_product(v)
     w = vu[0, 0] - vu[1, 1] - vu[2, 2] - vu[3, 3]
     x = vu[0, 1] + vu[1, 0] + vu[2, 3] - vu[3, 2]
     y = vu[0, 2] - vu[1, 3] + vu[2, 0] + vu[3, 1]
     z = vu[0, 3] + vu[1, 2] - vu[2, 1] + vu[3, 0]
-    return ti.Vector([w, x, y, z], dt=gs.ti_float)
+    return qd.Vector([w, x, y, z], dt=gs.qd_float)
 
 
-@ti.func
-def ti_transform_quat_by_quat(v, u):
+@qd.func
+def qd_transform_quat_by_quat(v, u):
     """Transforms quat_v by quat_u.
 
     This is equivalent to quatmul(quat_u, quat_v) or R_u @ R_v
     """
-    vec = ti_quat_mul(u, v)
+    vec = qd_quat_mul(u, v)
     return vec.normalized()
 
 
-@ti.func
-def ti_transform_by_quat(v, quat):
+@qd.func
+def qd_transform_by_quat(v, quat):
     q_w, q_x, q_y, q_z = quat
     q_xx, q_xy, q_xz, q_wx = q_x * q_x, q_x * q_y, q_x * q_z, q_x * q_w
     q_yy, q_yz, q_wy = q_y * q_y, q_y * q_z, q_y * q_w
     q_zz, q_wz = q_z * q_z, q_z * q_w
     q_ww = q_w * q_w
 
-    return ti.Vector(
+    return qd.Vector(
         [
             v.x * (q_xx + q_ww - q_yy - q_zz) + v.y * (2.0 * q_xy - 2.0 * q_wz) + v.z * (2.0 * q_xz + 2.0 * q_wy),
             v.x * (2.0 * q_wz + 2.0 * q_xy) + v.y * (q_ww - q_xx + q_yy - q_zz) + v.z * (-2.0 * q_wx + 2.0 * q_yz),
             v.x * (-2.0 * q_wy + 2.0 * q_xz) + v.y * (2.0 * q_wx + 2.0 * q_yz) + v.z * (q_ww - q_xx - q_yy + q_zz),
         ],
-        dt=gs.ti_float,
+        dt=gs.qd_float,
     ) / (q_ww + q_xx + q_yy + q_zz)
 
 
-@ti.func
-def ti_inv_transform_by_quat(v, quat):
-    return ti_transform_by_quat(v, ti_inv_quat(quat))
+@qd.func
+def qd_inv_transform_by_quat(v, quat):
+    return qd_transform_by_quat(v, qd_inv_quat(quat))
 
 
-@ti.func
-def ti_transform_by_T(pos, T):
+@qd.func
+def qd_transform_by_T(pos, T):
     return T[:3, :3] @ pos + T[:3, 3]
 
 
-@ti.func
-def ti_inv_transform_by_T(pos, T):
+@qd.func
+def qd_inv_transform_by_T(pos, T):
     return T[:3, :3].transpose() @ (pos - T[:3, 3])
 
 
-@ti.func
-def ti_transform_by_trans_quat(pos, trans, quat):
-    return ti_transform_by_quat(pos, quat) + trans
+@qd.func
+def qd_transform_by_trans_quat(pos, trans, quat):
+    return qd_transform_by_quat(pos, quat) + trans
 
 
-@ti.func
-def ti_inv_transform_by_trans_quat(pos, trans, quat):
-    return ti_transform_by_quat(pos - trans, ti_inv_quat(quat))
+@qd.func
+def qd_inv_transform_by_trans_quat(pos, trans, quat):
+    return qd_transform_by_quat(pos - trans, qd_inv_quat(quat))
 
 
-@ti.func
-def ti_transform_motion_by_trans_quat(m_ang, m_vel, trans, quat):
-    quat_inv = ti_inv_quat(quat)
-    ang = ti_transform_by_quat(m_ang, quat_inv)
-    vel = ti_transform_by_quat(m_vel - trans.cross(m_ang), quat_inv)
+@qd.func
+def qd_transform_motion_by_trans_quat(m_ang, m_vel, trans, quat):
+    quat_inv = qd_inv_quat(quat)
+    ang = qd_transform_by_quat(m_ang, quat_inv)
+    vel = qd_transform_by_quat(m_vel - trans.cross(m_ang), quat_inv)
     return ang, vel
 
 
-@ti.func
-def ti_inv_transform_motion_by_trans_quat(m_ang, m_vel, trans, quat):
-    ang = ti_transform_by_quat(m_ang, quat)
-    vel = ti_transform_by_quat(m_vel, quat) + trans.cross(ang)
+@qd.func
+def qd_inv_transform_motion_by_trans_quat(m_ang, m_vel, trans, quat):
+    ang = qd_transform_by_quat(m_ang, quat)
+    vel = qd_transform_by_quat(m_vel, quat) + trans.cross(ang)
     return ang, vel
 
 
-@ti.func
-def ti_transform_pos_quat_by_trans_quat(pos, quat, t_trans, t_quat):
-    new_pos = t_trans + ti_transform_by_quat(pos, t_quat)
-    new_quat = ti_transform_quat_by_quat(quat, t_quat)
+@qd.func
+def qd_transform_pos_quat_by_trans_quat(pos, quat, t_trans, t_quat):
+    new_pos = t_trans + qd_transform_by_quat(pos, t_quat)
+    new_quat = qd_transform_quat_by_quat(quat, t_quat)
     return new_pos, new_quat
 
 
-@ti.func
-def ti_transform_inertia_by_trans_quat(i_inertial, i_mass, trans, quat, eps):
+@qd.func
+def qd_transform_inertia_by_trans_quat(i_inertial, i_mass, trans, quat, eps):
     x, y, z = trans.x, trans.y, trans.z
     xx, xy, xz, yy, yz, zz = x * x, x * y, x * z, y * y, y * z, z * z
-    hhT = ti.Matrix(
+    hhT = qd.Matrix(
         [
             [yy + zz, -xy, -xz],
             [-xy, xx + zz, -yz],
@@ -302,67 +329,67 @@ def ti_transform_inertia_by_trans_quat(i_inertial, i_mass, trans, quat, eps):
         ]
     )
 
-    R = ti_quat_to_R(quat, eps)
+    R = qd_quat_to_R(quat, eps)
     i = R @ i_inertial @ R.transpose() + hhT * i_mass
     trans = trans * i_mass
 
     return i, trans, quat, i_mass
 
 
-@ti.func
-def ti_normalize(v, eps):
+@qd.func
+def qd_normalize(v, eps):
     return v / (v.norm(eps))
 
 
-@ti.func
-def ti_identity_quat():
-    return ti.Vector([1.0, 0.0, 0.0, 0.0], dt=gs.ti_float)
+@qd.func
+def qd_identity_quat():
+    return qd.Vector([1.0, 0.0, 0.0, 0.0], dt=gs.qd_float)
 
 
-@ti.func
-def ti_vec3(val):
-    return ti.Vector([val, val, val], dt=gs.ti_float)
+@qd.func
+def qd_vec3(val):
+    return qd.Vector([val, val, val], dt=gs.qd_float)
 
 
-@ti.func
-def ti_nowhere():
+@qd.func
+def qd_nowhere():
     # let's inject a bit of humor here
-    return ti.Vector([-2333333, -6666666, -5201314], dt=gs.ti_float)
+    return qd.Vector([-2333333, -6666666, -5201314], dt=gs.qd_float)
 
 
-@ti.func
-def ti_tet_vol(p0, p1, p2, p3):
+@qd.func
+def qd_tet_vol(p0, p1, p2, p3):
     return (p1 - p0).cross(p2 - p0).dot(p3 - p0) / 6.0
 
 
-@ti.func
+@qd.func
 def inertial_mul(pos, i, mass, vel, ang):
     _ang = i @ ang + pos.cross(vel)
     _vel = mass * vel - pos.cross(ang)
     return _ang, _vel
 
 
-@ti.func
+@qd.func
 def motion_cross_force(m_ang, m_vel, f_ang, f_vel):
     vel = m_ang.cross(f_vel)
     ang = m_ang.cross(f_ang) + m_vel.cross(f_vel)
     return ang, vel
 
 
-@ti.func
+@qd.func
 def motion_cross_motion(s_ang, s_vel, m_ang, m_vel):
     vel = s_ang.cross(m_vel) + s_vel.cross(m_ang)
     ang = s_ang.cross(m_ang)
     return ang, vel
 
 
-@ti.func
-def ti_orthogonals(a):
+@qd.func
+def qd_orthogonals(a):
     """
     Returns orthogonal vectors `b` and `c`, given a normal vector `a`.
     """
-    b = ti.Vector.zero(gs.ti_float, 3)
-    if ti.abs(a[1]) < 0.5:
+    b = qd.Vector.zero(gs.qd_float, 3)
+    if qd.abs(a[1]) < 0.5:
         b[0] = -a[0] * a[1]
         b[1] = 1.0 - a[1] ** 2
         b[2] = -a[2] * a[1]
@@ -374,17 +401,17 @@ def ti_orthogonals(a):
     return b, a.cross(b)
 
 
-@ti.func
+@qd.func
 def imp_aref(params, neg_penetration, vel, pos):
     timeconst, dampratio, dmin, dmax, width, mid, power = params
 
-    imp_x = ti.abs(neg_penetration) / width
+    imp_x = qd.abs(neg_penetration) / width
     imp_a = (1.0 / mid ** (power - 1)) * imp_x**power
     imp_b = 1.0 - (1.0 / (1.0 - mid) ** (power - 1)) * (1.0 - imp_x) ** power
     imp_y = imp_a if imp_x < mid else imp_b
 
     imp = dmin + imp_y * (dmax - dmin)
-    imp = ti.math.clamp(imp, dmin, dmax)
+    imp = qd.math.clamp(imp, dmin, dmax)
     imp = dmax if imp_x > 1.0 else imp
 
     b = 2.0 / (dmax * timeconst)
@@ -848,6 +875,10 @@ def R_to_quat(R, *, out=None):
         gs.raise_exception(f"the input must be either torch.Tensor or np.ndarray. got: {type(R)=}")
 
 
+def R_to_xyz(R, rpy=False, degrees=False):
+    return quat_to_xyz(R_to_quat(R), rpy=rpy, degrees=degrees)
+
+
 def trans_R_to_T(trans=None, R=None, *, out=None):
     is_torch = all(isinstance(e, torch.Tensor) for e in (trans, R) if e is not None)
     is_numpy = not is_torch and all(isinstance(e, np.ndarray) for e in (trans, R) if e is not None)
@@ -917,10 +948,16 @@ def trans_quat_to_T(trans=None, quat=None, *, out=None):
     return T
 
 
-def T_to_trans_quat(T, *, out=None):
-    trans = T[..., :3, 3]
-    quat = R_to_quat(T[..., :3, :3])
-    return trans, quat
+def T_to_trans(T):
+    return T[..., :3, 3]
+
+
+def T_to_quat(T):
+    return R_to_quat(T[..., :3, :3])
+
+
+def T_to_trans_quat(T):
+    return T_to_trans(T), T_to_quat(T)
 
 
 @nb.jit(nopython=True, cache=True)
@@ -1174,7 +1211,7 @@ def inv_transform_by_T(pos, T):
     return transform_by_R(pos - trans, R_inv)
 
 
-def _tc_polar(A: torch.Tensor, pure_rotation: bool, side: Literal["right", "left"]):
+def _tc_polar(A: torch.Tensor, pure_rotation: bool, side: Literal["right", "left"], eps: float):
     """Torch implementation of polar decomposition with batched support."""
     if A.ndim < 2:
         gs.raise_exception(f"Input must be at least 2D. got: {A.ndim=} dimensions")
@@ -1202,14 +1239,14 @@ def _tc_polar(A: torch.Tensor, pure_rotation: bool, side: Literal["right", "left
         col_idx = torch.arange(N, device=U_svd.device).unsqueeze(0).expand(batch_size, -1)  # (batch_size, N)
         max_vals = U_flat[batch_idx, max_indices_flat, col_idx]  # (batch_size, N)
         max_vals_abs = torch.abs(max_vals)
-        signs = torch.where(max_vals_abs > 1e-10, torch.sign(max_vals), torch.ones_like(max_vals))
+        signs = torch.where(max_vals_abs > eps, torch.sign(max_vals), torch.ones_like(max_vals))
         signs = signs.reshape(*batch_dims, N)
     else:
         # For single matrix case
         max_indices = torch.argmax(torch.abs(U_svd), dim=0)  # Shape: (N,)
         max_vals = U_svd[max_indices, torch.arange(N, device=U_svd.device)]  # (N,)
         max_vals_abs = torch.abs(max_vals)
-        signs = torch.where(max_vals_abs > 1e-10, torch.sign(max_vals), torch.ones_like(max_vals))
+        signs = torch.where(max_vals_abs > eps, torch.sign(max_vals), torch.ones_like(max_vals))
 
     U_svd = U_svd * signs.unsqueeze(-2) if is_batched else U_svd * signs
     Vt = Vt * signs.unsqueeze(-1) if is_batched else Vt * signs.unsqueeze(-1)
@@ -1297,7 +1334,7 @@ def _np_polar_core_single(A, pure_rotation: bool, side_int: int):
     signs = np.empty(N, dtype=U_svd.dtype)
     for j in range(N):
         max_val = np.abs(U_svd[max_indices[j], j])
-        if max_val > 1e-10:
+        if max_val > gs.EPS:
             signs[j] = np.sign(U_svd[max_indices[j], j])
         else:
             signs[j] = 1.0
@@ -1438,11 +1475,75 @@ def polar(A, pure_rotation: bool = True, side: Literal["right", "left"] = "right
         - P : The positive semi-definite matrix (scaling part). For 'right' decomposition,
           P has shape (N, N) or (*batch, N, N). For 'left' decomposition, P has shape (M, M) or (*batch, M, M).
     """
-    if isinstance(A, torch.Tensor):
-        return _tc_polar(A, pure_rotation, side)
     if isinstance(A, np.ndarray):
         return _np_polar(A, pure_rotation, side)
+    if isinstance(A, torch.Tensor):
+        return _tc_polar(A, pure_rotation, side, gs.EPS)
     gs.raise_exception(f"the input must be either torch.Tensor or np.ndarray. got: {type(A)=}")
+
+
+@nb.jit(nopython=True, cache=True)
+def _np_slerp(q0, q1, t):
+    q0_norm = np.sqrt(np.sum(np.square(q0.reshape((-1, 4))), -1).reshape((*q0.shape[:-1], 1)))
+    q0 = q0 / q0_norm
+    q1_norm = np.sqrt(np.sum(np.square(q1.reshape((-1, 4))), -1).reshape((*q1.shape[:-1], 1)))
+    q1 = q1 / q1_norm
+
+    d = q0 * q1
+    dot = np.sum(d.reshape((-1, 4)), -1).reshape((*d.shape[:-1], 1))
+    dot_abs = np.abs(dot)
+    t = t.reshape(dot.shape)
+
+    theta = np.arccos(dot_abs)
+    sin_theta_inv = 1.0 / np.sqrt(1.0 - dot_abs**2)
+
+    is_theta_eps = dot_abs > 1.0 - gs.EPS
+    s0 = np.where(is_theta_eps, 1.0 - t, np.sin((1.0 - t) * theta) * sin_theta_inv)
+    s1 = np.where(is_theta_eps, t, np.sin(t * theta) * sin_theta_inv) * np.where(dot < 0.0, -1.0, 1.0)
+    return s0 * q0 + s1 * q1
+
+
+@torch.jit.script
+def _tc_slerp(q0, q1, t, eps: float):
+    q0 = q0 / torch.linalg.norm(q0, dim=-1, keepdim=True)
+    q1 = q1 / torch.linalg.norm(q1, dim=-1, keepdim=True)
+
+    dot = torch.sum(q0 * q1, dim=-1, keepdim=True)
+    dot_abs = dot.abs()
+    t = t.reshape(dot.shape)
+
+    theta = torch.acos(dot_abs)
+    sin_theta_inv = 1.0 / torch.sqrt(1.0 - dot_abs**2)
+
+    is_theta_eps = dot_abs > 1.0 - eps
+    s0 = torch.where(is_theta_eps, 1.0 - t, torch.sin((1.0 - t) * theta) * sin_theta_inv)
+    s1 = torch.where(is_theta_eps, t, torch.sin(t * theta) * sin_theta_inv) * torch.where(dot < 0.0, -1.0, 1.0)
+    return s0 * q0 + s1 * q1
+
+
+def slerp(q0, q1, t):
+    """
+    Perform spherical linear interpolation between two quaternions.
+
+    Parameters
+    ----------
+    q0 : numpy.array | torch.Tensor
+        The start quaternion (w, x, y, z), can be batched.
+    q1 : numpy.array | torch.Tensor
+        The end quaternion (w, x, y, z), can be batched.
+    t : numpy.array | torch.Tensor
+        The interpolation parameter between 0 and 1.
+
+    Returns
+    -------
+    numpy.array | torch.Tensor
+        The interpolated quaternion (w, x, y, z).
+    """
+    if isinstance(q0, np.ndarray):
+        return _np_slerp(q0, q1, t)
+    if isinstance(q0, torch.Tensor):
+        return _tc_slerp(q0, q1, torch.as_tensor(t, dtype=gs.tc_float, device=gs.device), gs.EPS)
+    gs.raise_exception(f"the input must be either torch.Tensor or np.ndarray. got: {type(q0)=}")
 
 
 # ------------------------------------------------------------------------------------
@@ -1607,9 +1708,9 @@ def _np_euler_to_R(rpy: np.ndarray, out: np.ndarray | None = None) -> np.ndarray
     """
     assert rpy.ndim >= 1
     if out is None:
-        out_ = np.empty((*rpy.shape[1:], 3, 3), dtype=rpy.dtype)
+        out_ = np.empty((*rpy.shape[:-1], 3, 3), dtype=rpy.dtype)
     else:
-        assert out.shape == (*rpy.shape[1:], 3, 3)
+        assert out.shape == (*rpy.shape[:-1], 3, 3)
         out_ = out
 
     cos_rpy, sin_rpy = np.cos(rpy), np.sin(rpy)
@@ -1642,21 +1743,22 @@ def quat_to_rotvec(quat: np.ndarray, out: np.ndarray | None = None) -> np.ndarra
                 and returned, which is slower.
     """
     assert quat.ndim >= 1
+    B = quat.shape[:-1]
     if out is None:
-        out_ = np.empty((*quat.shape[:-1], 3), dtype=quat.dtype)
+        out_ = np.empty((*B, 3), dtype=quat.dtype)
     else:
-        assert out.shape == (*quat.shape[:-1], 3)
+        assert out.shape == (*B, 3)
         out_ = out
 
     # Split real (qw,) and imaginary (qx, qy, qz) quaternion parts
-    q_w, q_vec = quat[..., 0], quat[..., 1:]
+    q_w, q_vec = quat[..., :1], np.ascontiguousarray(quat[..., 1:])
 
     # Compute the angle-axis representation of the relative rotation
-    s2 = np.sqrt(np.sum(np.square(q_vec), -1))
+    s2 = np.sqrt(np.sum(np.square(q_vec.reshape((-1, 3))), -1)).reshape((*B, 1))
     angle = 2.0 * np.arctan2(s2, np.abs(q_w))
     # FIXME: Ideally, a taylor expansion should be used to handle angle ~ 0.0
     inv_sinc = angle / np.maximum(s2, gs.EPS)
-    out_[:] = (-1.0 if q_w < 0.0 else 1.0) * inv_sinc * q_vec
+    out_[:] = np.where(q_w < 0.0, -1.0, 1.0) * inv_sinc * q_vec
 
     if out is None:
         return out_
@@ -1745,6 +1847,9 @@ def R_to_rotvec(R: np.ndarray, out: np.ndarray | None = None) -> np.ndarray:
     :param out: Pre-allocated array into which to store the result. If not provided, a new array is freshly-allocated
                 and returned, which is slower.
     """
+    # The quaternion path (Shepperd + arctan2) is preferred over direct Rodrigues formula theta from arccos of trace)
+    # because the latter is catastrophically imprecise for near-identity rotations in float32 (the trace is ~3.0 and
+    # arccos amplifies rounding).
     return quat_to_rotvec(_np_R_to_quat(R), out=out)
 
 
@@ -1893,48 +1998,6 @@ def spherical_to_cartesian(theta: torch.Tensor, phi: torch.Tensor) -> tuple[torc
     return torch.stack([x, y, z], dim=-1)
 
 
-def slerp(q0, q1, t):
-    """
-    Perform spherical linear interpolation between two quaternions.
-
-    Parameters:
-    q0 : numpy.array
-        The start quaternion (4-dimensional vector).
-    q1 : numpy.array
-        The end quaternion (4-dimensional vector).
-    t : float
-        The interpolation parameter between 0 and 1.
-
-    Returns:
-    numpy.array
-        The interpolated quaternion (4-dimensional vector).
-    """
-    q0 = q0 / np.linalg.norm(q0)
-    q1 = q1 / np.linalg.norm(q1)
-
-    dot_product = np.dot(q0, q1)
-
-    if dot_product < 0.0:
-        q1 = -q1
-        dot_product = -dot_product
-
-    dot_product = np.clip(dot_product, -1.0, 1.0)
-
-    theta_0 = np.arccos(dot_product)
-    sin_theta_0 = np.sin(theta_0)
-
-    if sin_theta_0 < 1e-6:
-        return (1.0 - t) * q0 + t * q1
-
-    theta = theta_0 * t
-    sin_theta = np.sin(theta)
-
-    s0 = np.cos(theta) - dot_product * sin_theta / sin_theta_0
-    s1 = sin_theta / sin_theta_0
-
-    return s0 * q0 + s1 * q1
-
-
 def random_quaternion(batch_size):
     # Generate three uniform random numbers for each quaternion in the batch
     u1, u2, u3 = np.random.rand(3, batch_size)
@@ -1977,7 +2040,7 @@ def default_solver_params():
 
     Reference: https://mujoco.readthedocs.io/en/latest/modeling.html#solver-parameters
     """
-    return np.array([0.0, 1.0e00, 9.0e-01, 9.5e-01, 1.0e-03, 5.0e-01, 2.0e00])
+    return np.array([0.0, 1.0, 9.0e-01, 9.5e-01, 1.0e-03, 5.0e-01, 2.0])
 
 
 def default_friction():
@@ -1992,7 +2055,7 @@ def default_dofs_kv(n=6):
     return np.full((n,), fill_value=10.0, dtype=gs.np_float)
 
 
-@ti.data_oriented
+@qd.data_oriented
 class SpatialHasher:
     def __init__(self, cell_size, grid_res, n_slots=None):
         self.cell_size = cell_size
@@ -2006,12 +2069,12 @@ class SpatialHasher:
     def build(self, n_batch):
         self._B = n_batch
         # number of elements in each slot
-        self.slot_size = ti.field(gs.ti_int, shape=(self.n_slots, self._B))
+        self.slot_size = qd.field(gs.qd_int, shape=(self.n_slots, self._B))
         # element index offset in each slot
-        self.slot_start = ti.field(gs.ti_int, shape=(self.n_slots, self._B))
-        self.cur_cnt = ti.field(gs.ti_int, shape=(self._B,))
+        self.slot_start = qd.field(gs.qd_int, shape=(self.n_slots, self._B))
+        self.cur_cnt = qd.field(gs.qd_int, shape=(self._B,))
 
-    @ti.func
+    @qd.func
     def compute_reordered_idx(self, n, pos, active, reordered_idx):
         """
         Reordered element idx based on the given positions and active flags.
@@ -2030,26 +2093,26 @@ class SpatialHasher:
         self.slot_start.fill(0)
         self.cur_cnt.fill(0)
 
-        for i_n, i_b in ti.ndrange(n, self._B):
+        for i_n, i_b in qd.ndrange(n, self._B):
             if active[i_n, i_b]:
                 slot_idx = self.pos_to_slot(pos[i_n, i_b])
-                ti.atomic_add(self.slot_size[slot_idx, i_b], 1)
+                qd.atomic_add(self.slot_size[slot_idx, i_b], 1)
 
         for i_n in range(self.n_slots):
             for i_b in range(self._B):
-                self.slot_start[i_n, i_b] = ti.atomic_add(self.cur_cnt[i_b], self.slot_size[i_n, i_b])
+                self.slot_start[i_n, i_b] = qd.atomic_add(self.cur_cnt[i_b], self.slot_size[i_n, i_b])
 
-        for i_n, i_b in ti.ndrange(n, self._B):
+        for i_n, i_b in qd.ndrange(n, self._B):
             if active[i_n, i_b]:
                 slot_idx = self.pos_to_slot(pos[i_n, i_b])
-                reordered_idx[i_n, i_b] = ti.atomic_add(self.slot_start[slot_idx, i_b], 1)
+                reordered_idx[i_n, i_b] = qd.atomic_add(self.slot_start[slot_idx, i_b], 1)
 
         # recover slot_start
-        for i_s, i_b in ti.ndrange(self.n_slots, self._B):
+        for i_s, i_b in qd.ndrange(self.n_slots, self._B):
             self.slot_start[i_s, i_b] -= self.slot_size[i_s, i_b]
 
-    @ti.func
-    def for_all_neighbors(self, i_p, pos, task_range, ret: ti.template(), task: ti.template(), i_b):
+    @qd.func
+    def for_all_neighbors(self, i_p, pos, task_range, ret: qd.template(), task: qd.template(), i_b):
         """
         Iterates over all neighbors of a given position and performs a task on each neighbor.
         Elements are considered neighbors if they are within task_range.
@@ -2065,7 +2128,7 @@ class SpatialHasher:
             None
         """
         base = self.pos_to_grid(pos[i_p, i_b])
-        for offset in ti.grouped(ti.ndrange((-1, 2), (-1, 2), (-1, 2))):
+        for offset in qd.grouped(qd.ndrange((-1, 2), (-1, 2), (-1, 2))):
             slot_idx = self.grid_to_slot(base + offset)
             for j_p in range(
                 self.slot_start[slot_idx, i_b], self.slot_size[slot_idx, i_b] + self.slot_start[slot_idx, i_b]
@@ -2073,21 +2136,21 @@ class SpatialHasher:
                 if i_p != j_p and (pos[i_p, i_b] - pos[j_p, i_b]).norm() < task_range:
                     task(i_p, j_p, ret, i_b)
 
-    @ti.func
+    @qd.func
     def pos_to_grid(self, pos):
-        return ti.floor(pos / self.cell_size, gs.ti_int)
+        return qd.floor(pos / self.cell_size, gs.qd_int)
 
-    @ti.func
+    @qd.func
     def grid_to_pos(self, grid_id):
         return (grid_id + 0.5) * self.cell_size
 
-    @ti.func
+    @qd.func
     def grid_to_slot(self, grid_id):
         return (
             grid_id[0] * self.grid_res[1] * self.grid_res[2] + grid_id[1] * self.grid_res[2] + grid_id[2]
         ) % self.n_slots
 
-    @ti.func
+    @qd.func
     def pos_to_slot(self, pos):
         return self.grid_to_slot(self.pos_to_grid(pos))
 

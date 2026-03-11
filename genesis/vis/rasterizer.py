@@ -27,7 +27,7 @@ class Rasterizer(RBC):
         if self._offscreen:
             # Select PyOpenGL backend for `pyrender.OffscreenRenderer`.
             # If env variable is set, use specified platform if supported, otherwise some platform-specific default.
-            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if gs.platform == "Linux" else "pyglet")
+            platform = os.environ.get("PYOPENGL_PLATFORM", "egl" if sys.platform == "linux" else "pyglet")
             if platform not in ("osmesa", "pyglet", "egl"):
                 gs.logger.warning(f"PYOPENGL_PLATFORM='{platform}' not supported. Falling back to 'pyglet'.")
                 platform = "pyglet"
@@ -59,7 +59,7 @@ class Rasterizer(RBC):
         self._context.update_camera_frustum(camera)
 
     def remove_camera(self, camera):
-        self._context.removenode(self._camera_nodes[camera.uid])
+        self._context.remove_node(self._camera_nodes[camera.uid])
         del self._camera_nodes[camera.uid]
         if self._offscreen:
             self._camera_targets[camera.uid].delete()
@@ -158,7 +158,7 @@ class Rasterizer(RBC):
                     camera_target.delete()
                 elif self._viewer is not None:
                     self._viewer.close_offscreen(camera_target)
-            except OSError:
+            except (OpenGL.error.NullFunctionError, OSError):
                 pass
         self._camera_targets.clear()
 
@@ -166,7 +166,7 @@ class Rasterizer(RBC):
             try:
                 self._renderer.make_current()
                 self._renderer.delete()
-            except (OpenGL.error.GLError, ImportError):
+            except (OpenGL.error.GLError, OpenGL.error.NullFunctionError, ImportError):
                 pass
             del self._renderer
             self._renderer = None

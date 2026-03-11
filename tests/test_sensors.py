@@ -5,7 +5,11 @@ import torch
 import genesis as gs
 import genesis.utils.geom as gu
 
-from .utils import assert_allclose, assert_array_equal
+from .utils import assert_allclose, assert_equal
+
+# ------------------------------------------------------------------------------------------
+# -------------------------------------- IMU Sensors ---------------------------------------
+# ------------------------------------------------------------------------------------------
 
 
 @pytest.mark.required
@@ -16,6 +20,7 @@ def test_imu_sensor(show_viewer, tol, n_envs):
     DT = 1e-2
     BIAS = (0.1, 0.2, 0.3)
     DELAY_STEPS = 2
+    MAG_FIELD = (0.3, 0.1, 0.5)  # arbitrary world magnetic field
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
@@ -39,12 +44,14 @@ def test_imu_sensor(show_viewer, tol, n_envs):
     imu = scene.add_sensor(
         gs.sensors.IMU(
             entity_idx=box.idx,
+            magnetic_field=MAG_FIELD,
         )
     )
     imu_delayed = scene.add_sensor(
         gs.sensors.IMU(
             entity_idx=box.idx,
             delay=DT * DELAY_STEPS,
+            magnetic_field=MAG_FIELD,
         )
     )
     imu_noisy = scene.add_sensor(
@@ -52,11 +59,15 @@ def test_imu_sensor(show_viewer, tol, n_envs):
             entity_idx=box.idx,
             acc_cross_axis_coupling=0.01,
             gyro_cross_axis_coupling=(0.02, 0.03, 0.04),
+            mag_cross_axis_coupling=0.01,
             acc_noise=(0.01, 0.01, 0.01),
             gyro_noise=(0.01, 0.01, 0.01),
+            mag_noise=(0.01, 0.01, 0.01),
             acc_random_walk=(0.001, 0.001, 0.001),
             gyro_random_walk=(0.001, 0.001, 0.001),
+            mag_random_walk=(0.001, 0.001, 0.001),
             delay=DT,
+            magnetic_field=MAG_FIELD,
             jitter=DT * 0.1,
             interpolate=True,
         )
@@ -72,15 +83,17 @@ def test_imu_sensor(show_viewer, tol, n_envs):
     # acc_classical_lin_z = - theta_dot ** 2 - cos(theta) * g
     assert_allclose(imu.read().lin_acc, 0.0, tol=tol)
     assert_allclose(imu.read().ang_vel, 0.0, tol=tol)
+    assert_allclose(imu.read().mag, MAG_FIELD, tol=tol)
     assert_allclose(imu_noisy.read().lin_acc, 0.0, tol=1e-1)
     assert_allclose(imu_noisy.read().ang_vel, 0.0, tol=1e-1)
+    assert_allclose(imu_noisy.read().mag, MAG_FIELD, tol=1e-1)
 
     # shift COM to induce angular velocity
     box.set_COM_shift([0.05, 0.05, 0.05])
 
-    # update noise and bias for accelerometer and gyroscope
-    imu_noisy.set_noise((0.01, 0.01, 0.01, 0.02, 0.02, 0.02))
-    imu_noisy.set_bias((0.01, 0.01, 0.01, 0.02, 0.02, 0.02))
+    # update noise and bias for accelerometer, gyroscope and magnetometer
+    imu_noisy.set_noise((0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.05, 0.05, 0.05))
+    imu_noisy.set_bias((0.01, 0.01, 0.01, 0.02, 0.02, 0.02, 0.05, 0.05, 0.05))
     imu_noisy.set_jitter(0.001)
 
     for _ in range(10 - DELAY_STEPS):
@@ -91,8 +104,9 @@ def test_imu_sensor(show_viewer, tol, n_envs):
     for _ in range(DELAY_STEPS):
         scene.step()
 
-    assert_array_equal(imu_delayed.read().lin_acc, true_imu_delayed_reading.lin_acc)
-    assert_array_equal(imu_delayed.read().ang_vel, true_imu_delayed_reading.ang_vel)
+    assert_equal(imu_delayed.read().lin_acc, true_imu_delayed_reading.lin_acc)
+    assert_equal(imu_delayed.read().ang_vel, true_imu_delayed_reading.ang_vel)
+    assert_equal(imu_delayed.read().mag, true_imu_delayed_reading.mag)
 
     # check that position offset affects linear acceleration
     imu.set_pos_offset((0.5, 0.0, 0.0))
@@ -107,17 +121,21 @@ def test_imu_sensor(show_viewer, tol, n_envs):
     for _ in range(20):
         scene.step()
 
-    assert_array_equal(imu.read_ground_truth().lin_acc, imu_delayed.read_ground_truth().lin_acc)
-    assert_array_equal(imu.read_ground_truth().ang_vel, imu_delayed.read_ground_truth().ang_vel)
+    assert_equal(imu.read_ground_truth().lin_acc, imu_delayed.read_ground_truth().lin_acc)
+    assert_equal(imu.read_ground_truth().ang_vel, imu_delayed.read_ground_truth().ang_vel)
+    assert_equal(imu.read_ground_truth().mag, imu_delayed.read_ground_truth().mag)
 
     with np.testing.assert_raises(AssertionError, msg="Angular velocity should not be zero due to COM shift"):
         assert_allclose(imu.read_ground_truth().ang_vel, 0.0, tol=tol)
 
-    with np.testing.assert_raises(AssertionError, msg="Delayed data should not be equal to the ground truth data"):
-        assert_array_equal(imu_delayed.read().lin_acc - imu_delayed.read_ground_truth().lin_acc, 0.0)
+    with np.testing.assert_raises(AssertionError, msg="Delayed accl data should not be equal to the ground truth data"):
+        assert_equal(imu_delayed.read().lin_acc - imu_delayed.read_ground_truth().lin_acc, 0.0)
 
-    box.set_COM_shift([0.0, 0.0, 0.0])
-    box.set_quat([0.0, 0.0, 0.0, 1.0])
+    with np.testing.assert_raises(AssertionError, msg="Delayed mag data should not be equal to the ground truth data"):
+        assert_equal(imu_delayed.read().mag - imu_delayed.read_ground_truth().mag, 0.0)
+
+    box.set_COM_shift((0.0, 0.0, 0.0))
+    box.set_quat((0.0, 0.0, 0.0, 1.0))  # pi rotation around z-axis
 
     # wait for the box to be stationary on ground
     for _ in range(50):
@@ -125,24 +143,41 @@ def test_imu_sensor(show_viewer, tol, n_envs):
 
     assert_allclose(imu.read().lin_acc, (0.0, 0.0, -GRAVITY), tol=5e-6)
     assert_allclose(imu.read().ang_vel, (0.0, 0.0, 0.0), tol=1e-5)
+    assert_allclose(imu.read().mag, (-MAG_FIELD[0], -MAG_FIELD[1], MAG_FIELD[2]), tol=tol)
 
     # rotate IMU 90 deg around x axis means gravity should be along -y axis
     imu.set_quat_offset(gu.euler_to_quat((90.0, 0.0, 0.0)))
+    scene.step()
+    assert_allclose(imu.read().lin_acc, (0.0, GRAVITY, 0.0), tol=5e-6)
+    assert_allclose(imu.read().mag, (-MAG_FIELD[0], -MAG_FIELD[2], -MAG_FIELD[1]), tol=tol)
+
     imu.set_acc_cross_axis_coupling((0.0, 1.0, 0.0))
     scene.step()
     assert_allclose(imu.read().lin_acc, GRAVITY, tol=5e-6)
-    imu.set_quat_offset((0.0, 0.0, 0.0, 1.0))
-    imu.set_acc_cross_axis_coupling((0.0, 0.0, 0.0))
 
+    scene.reset()
+    box.set_dofs_velocity((1.0, 2.0, 3.0), dofs_idx_local=slice(3, None))
+    scene.step()
+    assert_allclose(imu.read_ground_truth().ang_vel, (1.0, 3.0, -2.0), tol=0.1)
+
+    imu.set_quat_offset((1.0, 0.0, 0.0, 0.0))
+    imu.set_acc_cross_axis_coupling((0.0, 0.0, 0.0))
     scene.reset()
 
     assert_allclose(imu.read().lin_acc, 0.0, tol=gs.EPS)  # biased, but cache hasn't been updated yet
     assert_allclose(imu_delayed.read().lin_acc, 0.0, tol=gs.EPS)
     assert_allclose(imu_noisy.read().ang_vel, 0.0, tol=gs.EPS)
+    assert_allclose(imu_noisy.read().mag, 0.0, tol=gs.EPS)  # biased
 
-    imu.set_bias(BIAS + (0.0, 0.0, 0.0))
+    imu.set_bias(BIAS + 2 * (0.0, 0.0, 0.0))
     scene.step()
     assert_allclose(imu.read().lin_acc, BIAS, tol=tol)
+    assert_allclose(imu.read().mag, MAG_FIELD, tol=tol)
+
+
+# ------------------------------------------------------------------------------------------
+# ------------------------------------ Contact Sensors -------------------------------------
+# ------------------------------------------------------------------------------------------
 
 
 @pytest.mark.required
@@ -300,6 +335,11 @@ def test_rigid_tactile_sensors_gravity_force(n_envs, show_viewer, tol):
     assert_allclose(force_sensor_noisy.read()[..., 2], -GRAVITY / 2, tol=gs.EPS)
 
 
+# ------------------------------------------------------------------------------------------
+# ------------------------------------ Raycast Sensors -------------------------------------
+# ------------------------------------------------------------------------------------------
+
+
 @pytest.mark.required
 @pytest.mark.parametrize("n_envs", [0, 2])
 def test_raycaster_hits(show_viewer, n_envs):
@@ -447,7 +487,7 @@ def test_raycaster_hits(show_viewer, n_envs):
     assert_allclose(spherical_distances, RAYCAST_HEIGHT, tol=5e-3)
 
     # Check that we can read image from depth camera
-    assert_array_equal(depth_camera.read_image().shape, batch_shape + NUM_RAYS_XY)
+    assert_equal(depth_camera.read_image().shape, batch_shape + NUM_RAYS_XY)
     # Note that the tolerance must be large because the sphere geometry is discretized
     assert_allclose(depth_camera.read_image(), RAYCAST_HEIGHT, tol=5e-3)
 
@@ -474,3 +514,273 @@ def test_raycaster_hits(show_viewer, n_envs):
     grid_distances_ref[(..., *hit_ij)] = RAYCAST_HEIGHT - BOX_SIZE
     grid_distances_ref += offset[..., 2].reshape((*(-1 for e in batch_shape), 1, 1))
     assert_allclose(grid_distances, grid_distances_ref, tol=1e-3)
+
+
+@pytest.mark.required
+def test_lidar_bvh_parallel_env(show_viewer, tol):
+    """Verify each environment receives a different lidar distance when geometries differ."""
+    scene = gs.Scene(
+        vis_options=gs.options.VisOptions(
+            rendered_envs_idx=(1,),
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(1, -5, 3),
+            camera_lookat=(1, 0.5, 0),
+        ),
+        show_viewer=show_viewer,
+    )
+    scene.add_entity(gs.morphs.Plane())
+
+    sensor_mount = scene.add_entity(
+        gs.morphs.Box(
+            size=(0.1, 0.1, 0.1),
+            pos=(0.0, 0.0, 0.5),
+            fixed=True,
+            collision=False,
+        )
+    )
+    obstacle_1 = scene.add_entity(
+        gs.morphs.Box(
+            size=(0.2, 0.2, 0.2),
+            pos=(1.0, 0.0, 0.5),
+            fixed=True,
+        ),
+    )
+    obstacle_2 = scene.add_entity(
+        gs.morphs.Box(
+            size=(0.05, 0.4, 0.4),
+            pos=(1.0, 0.0, 0.5),
+            fixed=True,
+        ),
+    )
+
+    lidar = scene.add_sensor(
+        gs.sensors.Lidar(
+            entity_idx=sensor_mount.idx,
+            pattern=gs.options.sensors.SphericalPattern(
+                n_points=(1, 1),
+                fov=(0.0, 0.0),
+            ),
+            max_range=5.0,
+            draw_debug=show_viewer,
+            debug_ray_start_color=(0.0, 0.0, 0.0, 0.0),
+            debug_ray_hit_color=(1.0, 0.0, 0.0, 1.0),
+        )
+    )
+
+    scene.build(n_envs=2)
+
+    sensor_positions = np.array([[0.0, 0.0, 0.5], [0.0, 1.0, 0.5]], dtype=gs.np_float)
+    obstacle_1_positions = np.array([[1.1, 0.0, 0.5], [2.5, 1.0, 0.5]], dtype=gs.np_float)
+    obstacle_2_positions = np.array([[1.4, 0.0, 0.5], [2.2, 1.0, 0.5]], dtype=gs.np_float)
+    sensor_mount.set_pos(sensor_positions)
+    obstacle_1.set_pos(obstacle_1_positions)
+    obstacle_2.set_pos(obstacle_2_positions)
+
+    scene.step()
+
+    distances = lidar.read().distances
+    assert distances.shape == (2, 1, 1)
+    lidar_distances = distances[:, 0, 0]
+
+    front_positions = np.minimum(obstacle_1_positions[:, 0] - 0.1, obstacle_2_positions[:, 0] - 0.025)
+    expected_distances = front_positions - sensor_positions[:, 0]
+    assert_allclose(lidar_distances, expected_distances, tol=tol)
+
+
+@pytest.mark.required
+def test_lidar_cache_offset_parallel_env(show_viewer, tol):
+    scene = gs.Scene(
+        show_viewer=show_viewer,
+    )
+
+    scene.add_entity(
+        morph=gs.morphs.Plane(),
+    )
+    cube = scene.add_entity(
+        morph=gs.morphs.Box(
+            size=(0.1, 0.1, 1.0),
+            pos=(0.0, 0.0, 0.5),
+        ),
+    )
+
+    sensors = [
+        scene.add_sensor(
+            gs.sensors.Raycaster(
+                pattern=gs.sensors.raycaster.SphericalPattern(
+                    n_points=(2, 2),
+                ),
+                entity_idx=cube.idx,
+                return_world_frame=False,
+            )
+        ),
+        scene.add_sensor(
+            gs.sensors.Raycaster(
+                pattern=gs.sensors.raycaster.SphericalPattern(
+                    n_points=(2, 2),
+                ),
+                entity_idx=cube.idx,
+                return_world_frame=False,
+            )
+        ),
+        scene.add_sensor(
+            gs.sensors.Raycaster(
+                pattern=gs.sensors.raycaster.SphericalPattern(
+                    n_points=(2, 2),
+                ),
+                entity_idx=cube.idx,
+                return_world_frame=False,
+            )
+        ),
+    ]
+
+    scene.build()
+
+    scene.step()
+    for sensor in sensors:
+        sensor_data = sensor.read()
+        assert (sensor_data.distances > gs.EPS).any()
+        assert (sensor_data.points.abs() > gs.EPS).any()
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("n_envs", [0, 2])
+def test_kinematic_contact_probe_box_support(show_viewer, tol, n_envs):
+    """Test KinematicContactProbe for a box resting on the ground and a fixed sphere on top of it."""
+    BOX_SIZE = 0.5
+    PROBE_RADIUS = 0.05
+    PENETRATION = 0.02
+    STIFFNESS = 100.0
+    SPHERE_RADIUS = 0.1
+    NOISE = 0.001
+    GRAVITY = -10.0
+
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            gravity=(0.0, 0.0, GRAVITY),
+        ),
+        profiling_options=gs.options.ProfilingOptions(
+            show_FPS=False,
+        ),
+        show_viewer=show_viewer,
+    )
+
+    scene.add_entity(gs.morphs.Plane())
+
+    box = scene.add_entity(
+        gs.morphs.Box(
+            size=(BOX_SIZE, BOX_SIZE, BOX_SIZE),
+            pos=(0.0, 0.0, BOX_SIZE / 2 - PENETRATION),  # box is penetrating ground plane
+            fixed=False,  # probe will not detect fixed-fixed contact
+        ),
+    )
+
+    sphere = scene.add_entity(
+        gs.morphs.Sphere(
+            radius=SPHERE_RADIUS,
+            pos=(0.0, 0.0, BOX_SIZE + SPHERE_RADIUS + 0.2),  # start with sphere above the box
+            fixed=True,
+        ),
+    )
+
+    probe_normals = (
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+    )
+    probe = scene.add_sensor(
+        gs.sensors.KinematicContactProbe(
+            entity_idx=box.idx,
+            probe_local_pos=(
+                (0.0, 0.0, BOX_SIZE / 2),  # top of box, center
+                (BOX_SIZE / 4, BOX_SIZE / 4, BOX_SIZE / 2),  # top of box
+                (-BOX_SIZE / 4, -BOX_SIZE / 4, BOX_SIZE / 2),  # top of box
+                (0.0, 0.0, -BOX_SIZE / 2),  # bottom of box, center
+            ),
+            probe_local_normal=probe_normals,
+            radius=(
+                PROBE_RADIUS,
+                PROBE_RADIUS / 10,  # small radius which cannot detect sphere unless it's perfectly on top
+                BOX_SIZE / 3,  # large radius that can detect sphere when not aligned
+                PROBE_RADIUS,
+            ),
+            stiffness=STIFFNESS,
+            noise=NOISE,
+            random_walk=NOISE * 0.1,
+            draw_debug=show_viewer,
+        )
+    )
+
+    sphere_probe = scene.add_sensor(
+        gs.sensors.KinematicContactProbe(
+            entity_idx=sphere.idx,
+            probe_local_pos=[(0.0, 0.0, -SPHERE_RADIUS)],
+            probe_local_normal=[(0.0, 0.0, -1.0)],
+            radius=PROBE_RADIUS,
+            stiffness=STIFFNESS,
+            debug_sphere_color=(0.0, 0.0, 1.0, 0.5),
+            draw_debug=show_viewer,
+        )
+    )
+
+    scene.build(n_envs=n_envs)
+
+    scene.step()
+
+    noisy_data = probe.read()
+    box_data = probe.read_ground_truth()
+
+    with np.testing.assert_raises(AssertionError):
+        assert_allclose(noisy_data.penetration, box_data.penetration, tol=gs.EPS)
+    with np.testing.assert_raises(AssertionError):
+        assert_allclose(noisy_data.force, box_data.force, tol=gs.EPS)
+
+    noise_tol = NOISE * 10.0
+    assert_allclose(noisy_data.penetration, box_data.penetration, atol=noise_tol)
+    assert_allclose(noisy_data.force, box_data.force, atol=noise_tol)
+
+    # Check that the box's bottom probe (idx 3) detects the ground
+    assert (box_data.penetration[..., 3] > tol).all(), "Bottom probe should detect ground contact"
+    assert (box_data.force[..., 3, 2] > tol).all(), "Bottom probe should have upward force from ground"
+
+    # Forces should be equivalent to the penetration * stiffness along normal vector
+    normals = torch.stack([-torch.tensor(n) for n in probe_normals])
+    expected_force = (box_data.penetration * STIFFNESS).unsqueeze(-1) * normals
+    assert_allclose(box_data.force, expected_force, tol=tol)
+
+    # Top probes should not detect anything yet
+    assert_allclose(box_data.penetration[..., :3], 0.0, tol=gs.EPS)
+    assert_allclose(box_data.force[..., :3, :], 0.0, tol=gs.EPS)
+
+    # Now position the sphere to penetrate the top of the box
+    sphere.set_pos((0.0, 0.0, BOX_SIZE + SPHERE_RADIUS - PENETRATION))
+    scene.step()
+
+    box_data = probe.read_ground_truth()
+    sphere_data = sphere_probe.read()
+
+    assert (box_data.penetration[..., 0] > tol).all(), "Top probe should detect sphere contact"
+    assert (box_data.force[..., 0, 2] < -tol).all(), "Top probe should have downward force from sphere"
+    assert (sphere_data.penetration[..., 0] > tol).all(), "Sphere probe should detect box contact"
+    assert_allclose(
+        sphere_data.penetration[..., 0],
+        box_data.penetration[..., 0],
+        tol=2e-3,
+        err_msg="Sphere probe penetration should match top box probe penetration",
+    )
+    assert_equal(
+        box_data.penetration[..., 1], 0.0, err_msg="Noncenter probe with small radius should not detect contact"
+    )
+    assert (box_data.penetration[..., 2] > tol).all(), "Noncenter probe with large radius should detect contact"
+
+    # Move sphere away and check no contact
+    sphere.set_pos((0.0, 0.0, BOX_SIZE / 2 + SPHERE_RADIUS + PROBE_RADIUS + 0.2))
+    scene.step()
+
+    sphere_data = sphere_probe.read()
+    sphere_ground_truth = sphere_probe.read_ground_truth()
+    assert_allclose(sphere_data.penetration, sphere_ground_truth.penetration, tol=gs.EPS)
+    assert_allclose(sphere_data.force, sphere_ground_truth.force, tol=gs.EPS)
+    assert_allclose(sphere_data.penetration, 0.0, tol=gs.EPS)
+    assert_allclose(sphere_data.force, 0.0, tol=gs.EPS)
