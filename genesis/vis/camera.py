@@ -587,6 +587,74 @@ class Camera(RBC):
         point_cloud = point_cloud[..., :3].reshape((*depth_arr.shape, 3))
         return point_cloud, mask
 
+    @gs.assert_built
+    def render_pointcloud_gpu(self, world_frame=False):
+        """
+        Render a partial point cloud entirely on GPU, returning torch tensors.
+
+        Unlike render_pointcloud(), this avoids all CPU/numpy conversions.
+        Requires the batch renderer (batched envs).
+
+        Parameters
+        ----------
+        world_frame : bool, optional
+            Whether the point cloud is in world frame or camera frame.
+
+        Returns
+        -------
+        pc : torch.Tensor, shape (N, H, W, 3)
+            Point cloud per pixel. Invalid pixels are set to 0.
+        mask : torch.Tensor, shape (N, H, W)
+            Boolean validity mask.
+        """
+        assert self._batch_renderer is not None, "render_pointcloud_gpu requires batch renderer"
+
+        # Get depth tensor directly from batch renderer (stays on GPU)
+        buffers = list(self._batch_renderer.render(False, True, False, False, False, False))
+        depth = buffers[1][self.idx]  # (n_envs, H, W) torch tensor on GPU
+        device = depth.device
+
+        width, height = self.res
+        fx = fy = self.f
+        cx = self.cx
+        cy = self.cy
+
+        # Valid depth mask
+        mask = (self.near < depth) & (depth < self.far * (1.0 - 1e-3))  # (n_envs, H, W)
+
+        # Cached pixel coordinate grids (created once, reused every call)
+        if not hasattr(self, "_gpu_u_grid") or self._gpu_u_grid.device != device:
+            v_grid, u_grid = torch.meshgrid(
+                torch.arange(height, device=device, dtype=torch.float32),
+                torch.arange(width, device=device, dtype=torch.float32),
+                indexing="ij",
+            )  # both (H, W)
+            self._gpu_u_coeff = (u_grid + 0.5 - cx) / fx  # (H, W)
+            self._gpu_v_coeff = (v_grid + 0.5 - cy) / fy  # (H, W)
+            self._gpu_u_grid = u_grid  # keep reference for device check
+
+        # Unproject to camera-frame 3D
+        x = depth * self._gpu_u_coeff
+        y = depth * self._gpu_v_coeff
+        pc = torch.stack((x, y, depth), dim=-1)  # (n_envs, H, W, 3)
+
+        # Zero out invalid points
+        pc = pc * mask.unsqueeze(-1)
+
+        if world_frame:
+            T = torch.tensor(
+                [[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]],
+                dtype=torch.float32, device=device,
+            )
+            cam_pose = self.get_transform() @ T  # (n_envs, 4, 4)
+            flat = pc.reshape(pc.shape[0], -1, 3)  # (n_envs, H*W, 3)
+            ones = torch.ones(*flat.shape[:-1], 1, device=device)
+            homo = torch.cat([flat, ones], dim=-1)  # (n_envs, H*W, 4)
+            flat = (homo @ cam_pose.transpose(-1, -2))[..., :3]
+            pc = flat.reshape(pc.shape)  # (n_envs, H, W, 3)
+
+        return pc, mask
+
     def set_pose(self, transform=None, pos=None, lookat=None, up=None, envs_idx=None):
         """
         Set the pose of the camera.
