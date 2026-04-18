@@ -65,3 +65,43 @@ python examples/tactile/visualize_tactile_mapping.py \
 ### Coordinate mapping
 - Row direction (image) ↔ Z direction (tactile, positive = up)
 - Column direction (image) ↔ Y direction (tactile, flipped: positive Y = lower col)
+
+
+
+
+
+# Run Point Generation on new Models
+
+## Generate Points
+```
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.005 --output finger1_link4.json --dense-samples 200000 --links finger1_link4 --z-min 0.0005 --palm-threshold -0.3
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.005 --output finger1_link3.json --dense-samples 200000 --links finger1_link3 --palm-threshold -0.3 --z-min 0.002 --z-max 0.026
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.005 --output finger1_link2.json --dense-samples 200000 --links finger1_link2 --palm-threshold -0.3 --z-min 0.002 --z-max 0.032 --palm-facing-angle 70
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.005 --grid-spacing-v 0.005 --output palm.json --dense-samples 200000 --links palm_link  --palm-threshold -0.8
+
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.0046 --output finger_link2_1.json --dense-samples 200000 --links finger2_link2,finger3_link2 --palm-threshold -0.3 --z-min -0.005 --z-max 0.035
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.0046 --output finger_link2_2.json --dense-samples 200000 --links finger4_link2,finger5_link2 --palm-threshold -0.5 --z-min -0.005 --z-max 0.035
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.0046 --output finger_link3.json --dense-samples 200000 --links finger2_link3,finger3_link3,finger4_link3,finger5_link3 --palm-threshold -0.3 --z-min 0.003 --z-max 0.027
+
+python examples/tactile/generate_grid_tactile_points.py --grid-spacing-h 0.003 --grid-spacing-v 0.004 --output finger_link4.json --dense-samples 200000 --links finger2_link4,finger3_link4,finger4_link4,finger5_link4 --palm-threshold -0.17  --z-min 0.0
+
+```
+
+
+## Remove points
+```
+python examples/tactile/edit_tactile_points.py
+```
+
+## Merge
+```
+python examples/tactile/merge_tactile_grids.py \
+    finger1_*.json finger_link*.json palm.json \
+    --output full_hand_tactile.json
+```

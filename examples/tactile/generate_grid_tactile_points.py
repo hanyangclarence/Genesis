@@ -326,7 +326,7 @@ def main():
 
     hand = scene.add_entity(
         gs.morphs.URDF(
-            file="/home/hanyang/code/humanoid/GenesisPlayground/assets/robot/wujihand-urdf/urdf/right.urdf",
+            file="/home/yianw/yanghan/code/new_version/GenesisPlayground/assets/robot/xarm/wujihand_right_v5.urdf",
             merge_fixed_links=False,
             fixed=True,
             pos=(0, 0, 0.1),
