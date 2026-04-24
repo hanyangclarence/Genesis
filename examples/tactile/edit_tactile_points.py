@@ -161,8 +161,14 @@ def main():
                 pts2d = coords[:, 1:]
             newly = mpl_path.contains_points(pts2d)
             state["selected"] |= newly
+            vs = np.asarray(verts)
             print(f"  [{proj}] lasso hit {int(newly.sum())} points "
-                  f"({int(state['selected'].sum())} total selected)")
+                  f"({int(state['selected'].sum())} total selected)  "
+                  f"verts={len(vs)}  "
+                  f"x=[{vs[:,0].min():.4f},{vs[:,0].max():.4f}]  "
+                  f"y=[{vs[:,1].min():.4f},{vs[:,1].max():.4f}]  "
+                  f"pts_x=[{pts2d[:,0].min():.4f},{pts2d[:,0].max():.4f}]  "
+                  f"pts_y=[{pts2d[:,1].min():.4f},{pts2d[:,1].max():.4f}]")
             _refresh()
         return onselect
 

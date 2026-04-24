@@ -24,67 +24,137 @@ import json
 from pathlib import Path
 
 import numpy as np
-from scipy.optimize import linear_sum_assignment
+import matplotlib.pyplot as plt
 
 
-# YZ offsets for visualization layout (from tactile_field_hand.py)
-LINK_YZ_OFFSETS = {
-    "palm_link": (0.0, 0.0),
-    "finger1_link1": (0.05, 0.02),
-    "finger1_link2": (0.05, 0.05),
-    "finger1_link3": (0.05, 0.08),
-    "finger1_link4": (0.05, 0.11),
-    "finger1_tip_link": (0.05, 0.14),
-    "finger2_link1": (0.02, 0.06),
-    "finger2_link2": (0.02, 0.10),
-    "finger2_link3": (0.02, 0.14),
-    "finger2_link4": (0.02, 0.18),
-    "finger2_tip_link": (0.02, 0.21),
-    "finger3_link1": (0.0, 0.06),
-    "finger3_link2": (0.0, 0.10),
-    "finger3_link3": (0.0, 0.14),
-    "finger3_link4": (0.0, 0.18),
-    "finger3_tip_link": (0.0, 0.21),
-    "finger4_link1": (-0.02, 0.06),
-    "finger4_link2": (-0.02, 0.10),
-    "finger4_link3": (-0.02, 0.14),
-    "finger4_link4": (-0.02, 0.18),
-    "finger4_tip_link": (-0.02, 0.21),
-    "finger5_link1": (-0.04, 0.04),
-    "finger5_link2": (-0.04, 0.08),
-    "finger5_link3": (-0.04, 0.12),
-    "finger5_link4": (-0.04, 0.16),
-    "finger5_tip_link": (-0.04, 0.19),
+# Per-finger base colors for the preview plot (matches visualize_tactile_mapping_3d.py)
+FINGER_COLORS = {
+    "finger1": "#e41a1c",  # Thumb
+    "finger2": "#377eb8",  # Index
+    "finger3": "#4daf4a",  # Middle
+    "finger4": "#984ea3",  # Ring
+    "finger5": "#ff7f00",  # Pinky
+    "palm":    "#a65628",  # Palm
 }
 
 
+def _link_color(link_name):
+    for key, c in FINGER_COLORS.items():
+        if key in link_name:
+            return c
+    return "#999999"
+
+
+def preview_merged_points(tactile_points, title="Merged tactile points (close to continue)"):
+    """Show all tactile points in the merged 2D coordinate system, colored by
+    link. Blocks until the user closes the window.
+    """
+    _, ax = plt.subplots(figsize=(9, 10))
+    by_link = {}
+    for p in tactile_points:
+        by_link.setdefault(p['link_name'], []).append(p['offset_pos_2d'])
+
+    for link_name, coords in sorted(by_link.items()):
+        arr = np.array(coords)
+        ax.scatter(arr[:, 0], arr[:, 1],
+                   c=_link_color(link_name), s=18,
+                   edgecolors='black', linewidths=0.3,
+                   label=f"{link_name} ({len(arr)})")
+        # Annotate each link's cluster centroid with its name
+        cx, cy = arr.mean(axis=0)
+        ax.annotate(link_name, (cx, cy), fontsize=7, ha='center', va='center',
+                    color='black', alpha=0.7)
+
+    ax.set_xlabel("Horizontal (m)")
+    ax.set_ylabel("Vertical (m)")
+    ax.set_title(title)
+    ax.set_aspect('equal')
+    # Same orientation as create_tactile_mapping.py: Y+ left, Z+ down
+    ax.invert_xaxis()
+    ax.invert_yaxis()
+    ax.legend(loc='upper right', fontsize=7, ncol=2)
+    plt.tight_layout()
+    plt.show()
+
+
+# YZ offsets for visualization layout (must match create_tactile_mapping.py)
+LINK_YZ_OFFSETS = {
+    "palm_link": (0.0, 0.0),
+    "finger1_link1": (-0.05, 0.02),
+    "finger1_link2": (-0.05, 0.05),
+    "finger1_link3": (-0.05, 0.08),
+    "finger1_link4": (-0.05, 0.11),
+    "finger1_tip_link": (-0.05, 0.14),
+    "finger2_link1": (-0.024, 0.055),
+    "finger2_link2": (-0.024, 0.095),
+    "finger2_link3": (-0.024, 0.135),
+    "finger2_link4": (-0.024, 0.175),
+    "finger2_tip_link": (-0.024, 0.205),
+    "finger3_link1": (-0.003, 0.055),
+    "finger3_link2": (-0.003, 0.095),
+    "finger3_link3": (-0.003, 0.135),
+    "finger3_link4": (-0.003, 0.175),
+    "finger3_tip_link": (-0.003, 0.205),
+    "finger4_link1": (0.015, 0.049),
+    "finger4_link2": (0.015, 0.089),
+    "finger4_link3": (0.015, 0.129),
+    "finger4_link4": (0.015, 0.169),
+    "finger4_tip_link": (0.015, 0.199),
+    "finger5_link1": (0.031, 0.034),
+    "finger5_link2": (0.031, 0.074),
+    "finger5_link3": (0.031, 0.124),
+    "finger5_link4": (0.031, 0.154),
+    "finger5_tip_link": (0.031, 0.174),
+}
+
+
+# Per-link collapse axis — must match create_tactile_mapping.py.
+LINK_COLLAPSE_AXIS = {
+    "finger2_link2": 1,  # drop Y, keep XZ
+    "finger3_link2": 1,
+    "finger4_link2": 1,
+    "finger5_link2": 1,
+    "finger1_link2": 1,
+}
+
+
+def get_collapse_axis(link_name):
+    return LINK_COLLAPSE_AXIS.get(link_name, 0)
+
+
 def parse_tactile_points(tactile_data):
-    """Parse tactile points and compute 2D offset positions."""
-    tactile_points = []  # List of dicts with link_name, point_idx, local_pos, offset_pos_2d
+    """Parse tactile points; 2D layout uses each link's two in-plane local
+    axes (the surface-normal axis, detected as the smallest-spread axis, is
+    dropped) plus the per-link layout offset. Must match the projection used
+    in create_tactile_mapping.py.
+    """
+    tactile_points = []
     links_data = tactile_data.get('links', {})
+    axis_names = ['X', 'Y', 'Z']
 
     for link_name, link_data in links_data.items():
         points = link_data.get('points', [])
-        yz_offset = LINK_YZ_OFFSETS.get(link_name, (0.0, 0.0))
+        if not points:
+            continue
+
+        collapse_axis = get_collapse_axis(link_name)
+        keep_axes = [a for a in range(3) if a != collapse_axis]
+        offset = LINK_YZ_OFFSETS.get(link_name, (0.0, 0.0))
+        a, b = keep_axes
+
+        print(f"  {link_name}: drop {axis_names[collapse_axis]}, "
+              f"keep {axis_names[a]}{axis_names[b]} ({len(points)} points)")
 
         for point_idx, point in enumerate(points):
             local_pos = np.array(point['local'] if isinstance(point, dict) else point)
-
-            # Project to 2D with offset (same logic as tactile_field_hand.py)
-            if link_name == "finger1_link2":
-                # Project to XZ plane for thumb
-                offset_pos_2d = np.array([local_pos[0] + yz_offset[0],
-                                           local_pos[2] + yz_offset[1]])
-            else:
-                # Project to YZ plane
-                offset_pos_2d = np.array([local_pos[1] + yz_offset[0],
-                                           local_pos[2] + yz_offset[1]])
-
+            offset_pos_2d = np.array([local_pos[a] + offset[0],
+                                       local_pos[b] + offset[1]])
             tactile_points.append({
                 'link_name': link_name,
                 'point_idx': point_idx,
                 'local_pos': local_pos,
                 'offset_pos_2d': offset_pos_2d,
+                'collapse_axis': collapse_axis,
             })
 
     return tactile_points
@@ -215,6 +285,9 @@ def main():
     parser.add_argument("--output", type=str,
                         default="tactile_pixel_mapping.json",
                         help="Output path for computed mapping")
+    parser.add_argument("--no-preview", action="store_true",
+                        help="Skip the 2D preview of merged tactile points before "
+                             "running the assignment")
     args = parser.parse_args()
 
     # Load raw mapping
@@ -240,6 +313,11 @@ def main():
     # Parse tactile points
     tactile_points = parse_tactile_points(tactile_data)
     print(f"Parsed {len(tactile_points)} tactile points")
+
+    if not args.no_preview:
+        print("Previewing merged 2D layout — close the window to continue. "
+              "Edit LINK_YZ_OFFSETS in this file if you want to move clusters around.")
+        preview_merged_points(tactile_points)
 
     # Get image shape
     image_shape = tuple(raw_mapping.get('image_shape', [24, 32]))

@@ -33,8 +33,6 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
-from matplotlib.collections import PatchCollection
 import matplotlib.colors as mcolors
 
 # YZ offsets for visualization layout (from tactile_field_hand.py)
@@ -71,13 +69,28 @@ LINK_YZ_OFFSETS = {
 COLORS = list(mcolors.TABLEAU_COLORS.values())
 
 
+# Per-link collapse axis: 0=X, 1=Y, 2=Z. Default (for any link not listed) is
+# to drop X and keep YZ. Only links whose sensing surface normal points along
+# a different local axis need an entry here.
+LINK_COLLAPSE_AXIS = {
+    "finger2_link2": 1,  # drop Y, keep XZ
+    "finger3_link2": 1,
+    "finger4_link2": 1,
+    "finger5_link2": 1,
+}
+
+
+def get_collapse_axis(link_name):
+    return LINK_COLLAPSE_AXIS.get(link_name, 0)
+
+
 class TactileMappingTool:
     def __init__(self, tactile_data, image_shape=(24, 32)):
         self.tactile_data = tactile_data
         self.image_shape = image_shape
 
         # Parse tactile points
-        self.tactile_points = []  # List of (link_name, point_idx, local_pos, offset_pos_2d)
+        self.tactile_points = []  # List of dicts with link_name, point_idx, local_pos, offset_pos_2d, collapse_axis
         self.parse_tactile_points()
 
         # Selection state
@@ -96,31 +109,38 @@ class TactileMappingTool:
         self.setup_figure()
 
     def parse_tactile_points(self):
-        """Parse tactile points and compute 2D offset positions."""
+        """Parse tactile points; 2D layout uses each link's two in-plane local
+        axes. The surface-normal axis (smallest spread across the link's
+        points) is dropped, and the remaining two are offset by
+        ``LINK_YZ_OFFSETS[link_name]`` so clusters don't overlap in the
+        visualization.
+        """
         links_data = self.tactile_data.get('links', {})
+        axis_names = ['X', 'Y', 'Z']
 
         for link_name, link_data in links_data.items():
             points = link_data.get('points', [])
-            yz_offset = LINK_YZ_OFFSETS.get(link_name, (0.0, 0.0))
+            if not points:
+                continue
+
+            collapse_axis = get_collapse_axis(link_name)
+            keep_axes = [a for a in range(3) if a != collapse_axis]
+            offset = LINK_YZ_OFFSETS.get(link_name, (0.0, 0.0))
+            a, b = keep_axes
+
+            print(f"  {link_name}: drop {axis_names[collapse_axis]}, "
+                  f"keep {axis_names[a]}{axis_names[b]} ({len(points)} points)")
 
             for point_idx, point in enumerate(points):
                 local_pos = np.array(point['local'] if isinstance(point, dict) else point)
-
-                # Project to 2D with offset (same logic as tactile_field_hand.py)
-                if link_name == "finger1_link2":
-                    # Project to XZ plane for thumb
-                    offset_pos_2d = np.array([local_pos[0] + yz_offset[0],
-                                               local_pos[2] + yz_offset[1]])
-                else:
-                    # Project to YZ plane
-                    offset_pos_2d = np.array([local_pos[1] + yz_offset[0],
-                                               local_pos[2] + yz_offset[1]])
-
+                offset_pos_2d = np.array([local_pos[a] + offset[0],
+                                           local_pos[b] + offset[1]])
                 self.tactile_points.append({
                     'link_name': link_name,
                     'point_idx': point_idx,
                     'local_pos': local_pos,
                     'offset_pos_2d': offset_pos_2d,
+                    'collapse_axis': collapse_axis,
                 })
 
         print(f"Loaded {len(self.tactile_points)} tactile points from {len(links_data)} links")
@@ -129,10 +149,10 @@ class TactileMappingTool:
         """Setup the matplotlib figure with two panels."""
         self.fig, (self.ax_tactile, self.ax_pixel) = plt.subplots(1, 2, figsize=(16, 8))
 
-        # Left panel: Tactile points
+        # Left panel: Tactile points (per-link local 2D + layout offsets)
         self.ax_tactile.set_title("Tactile Points (Left drag: select, Right drag: deselect)")
-        self.ax_tactile.set_xlabel("Y (m)")
-        self.ax_tactile.set_ylabel("Z (m)")
+        self.ax_tactile.set_xlabel("Horizontal (m)")
+        self.ax_tactile.set_ylabel("Vertical (m)")
         self.ax_tactile.set_aspect('equal')
 
         # Plot all tactile points
@@ -142,6 +162,9 @@ class TactileMappingTool:
             c='lightgray', s=30, edgecolors='black', linewidths=0.5,
             picker=True, pickradius=5
         )
+        # Flip so Y+ points left and Z+ points down (hand points down visually)
+        self.ax_tactile.invert_xaxis()
+        self.ax_tactile.invert_yaxis()
 
         # Right panel: Pixel grid
         self.ax_pixel.set_title("24x32 Tactile Image (Left drag: select, Right drag: deselect)")
@@ -520,7 +543,7 @@ def main():
     # Create and run tool
     tool = TactileMappingTool(
         tactile_data,
-        image_shape=(args.image_rows, args.image_cols)
+        image_shape=(args.image_rows, args.image_cols),
     )
     tool.run()
 

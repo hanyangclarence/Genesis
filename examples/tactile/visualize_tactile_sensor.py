@@ -52,7 +52,7 @@ def main():
     # )
     wuji_hand = scene.add_entity(
         gs.morphs.URDF(
-            file="/home/hanyang/code/humanoid/GenesisPlayground/assets/robot/xarm/wujihand_left_v2.urdf",
+            file="/home/hanyang/code/humanoid/GenesisPlayground/assets/robot/xarm/wujihand_left_v5.urdf",
             merge_fixed_links=False,
             fixed=True,
             pos=(0, 0.1, 0.1),
