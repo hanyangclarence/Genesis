@@ -6,12 +6,14 @@ and, within each group, assigns every pixel to its nearest tactile point in the
 normalized 2D layout (tactile_layout.py). Tactile points left without a pixel go
 to their nearest pixel.
 
+Before assigning, it shows the 2D layout of all points (skip with --no-preview).
+
 Input:
     - Raw mapping JSON from create_tactile_mapping.py
     - Original tactile grid JSON (for 2D positions)
 
 Output:
-    - Clean mapping file with point_to_pixel and pixel_to_points
+    - Mapping file with point_to_pixel, pixel_to_points, and per_link_mapping
 
 Usage:
     python examples/tactile/compute_tactile_mapping.py \

@@ -1,16 +1,23 @@
 """
-Generate Grid-Like Tactile Points on Palm Surfaces
+Generate a grid of tactile points on the palm-facing surface of hand links.
 
-This script generates a proper grid of tactile points by:
-1. Dense sampling on palm-facing surfaces
-2. Projecting to 2D plane (YZ for vertical surfaces, XY for horizontal)
-3. Organizing into rows by Z-coordinate intervals
-4. Selecting evenly-spaced points along each row
-5. Ensuring uniform coverage on curved and flat surfaces
+For each selected link, this script:
+1. Keeps the collision-mesh triangles that face the palm (--palm-threshold, --palm-facing-angle)
+2. Samples points densely on them (--dense-samples)
+3. Projects the samples onto a 2D plane: the link's local Z axis (vertical) and the horizontal
+   axis perpendicular to Z and to the surfaces' average normal
+4. Splits the vertical extent into rows and, at each grid position, keeps the nearest unused
+   sample (--grid-spacing-h/-v, or --grid-rows/--grid-cols)
+5. Drops points outside --z-min/--z-max along the link's Z axis
 
-This produces a clean grid pattern suitable for tactile sensor arrays.
 Points are written in each link's local frame, as {"local": [x, y, z]} entries that
 edit_tactile_points.py and merge_tactile_grids.py read.
+
+Usage:
+    python examples/tactile/generate_grid_tactile_points.py \
+        --links finger2_link3,finger3_link3,finger4_link3,finger5_link3 \
+        --grid-spacing-h 0.003 --grid-spacing-v 0.0038 --palm-threshold -0.3 \
+        --z-min 0.003 --z-max 0.027 --dense-samples 200000 --output finger_link3.json
 """
 
 import argparse

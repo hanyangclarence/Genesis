@@ -18,6 +18,12 @@ Controls
 Because the point positions come from the URDF's own forward kinematics,
 this script works uniformly for the right and left hand with no hard-coded
 per-link offsets.
+
+Usage:
+    python examples/tactile/visualize_tactile_mapping_3d.py \
+        --tactile-grid examples/tactile/full_hand_tactile_v5.json \
+        --mapping examples/tactile/tactile_pixel_mapping_v5.json \
+        --urdf genesis/assets/urdf/wujihand_v5/wujihand_right_v5.urdf
 """
 import argparse
 import json
@@ -290,9 +296,9 @@ class Interactive3DMappingViewer:
 def main():
     parser = argparse.ArgumentParser(description="Interactive 3D tactile-point / pixel-map viewer")
     parser.add_argument("--tactile-grid", type=str, required=True,
-                        help="Path to tactile grid JSON (e.g. full_hand_tactile_left.json)")
+                        help="Path to tactile grid JSON (e.g. full_hand_tactile_left_v5.json)")
     parser.add_argument("--mapping", type=str, required=True,
-                        help="Path to pixel mapping JSON (e.g. tactile_pixel_mapping_left.json)")
+                        help="Path to pixel mapping JSON (e.g. tactile_pixel_mapping_left_v5.json)")
     parser.add_argument("--urdf", type=str, required=True,
                         help="Path to the URDF that the tactile grid was generated for")
     args = parser.parse_args()

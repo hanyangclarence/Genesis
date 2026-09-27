@@ -1,7 +1,14 @@
 #!/usr/bin/env python3
 """
-Merge multiple tactile grid JSON files into a single file.
-Only keeps local coordinates for each point.
+Merge per-link tactile grid files (from generate_grid_tactile_points.py) into a single
+tactile grid for the whole hand.
+
+Only each point's link-local position is kept. Links appear in the order of the input
+files, which fixes the global point order used by the sensor readout and the pixel
+mapping. A link that appears in several files gets its points concatenated.
+
+Usage:
+    python examples/tactile/merge_tactile_grids.py finger*.json palm.json --output full_hand_tactile.json
 """
 
 import json

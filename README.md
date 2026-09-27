@@ -1,255 +1,92 @@
-![Genesis](imgs/big_text.png)
+# Genesis with tactile sensing
 
-![Teaser](imgs/teaser.png)
+A fork of [Genesis](https://github.com/Genesis-Embodied-AI/Genesis) that adds a dense tactile
+sensor, `gs.sensors.TactileField`, and tools to place tactile points on a hand and map them to a
+24x32 tactile image.
 
-[![PyPI - Version](https://img.shields.io/pypi/v/genesis-world)](https://pypi.org/project/genesis-world/)
-[![PyPI Downloads](https://static.pepy.tech/badge/genesis-world)](https://pepy.tech/projects/genesis-world)
-[![GitHub Issues](https://img.shields.io/github/issues/Genesis-Embodied-AI/Genesis)](https://github.com/Genesis-Embodied-AI/Genesis/issues)
-[![GitHub Discussions](https://img.shields.io/github/discussions/Genesis-Embodied-AI/Genesis)](https://github.com/Genesis-Embodied-AI/Genesis/discussions)
-[![Discord](https://img.shields.io/discord/1322086972302430269?logo=discord)](https://discord.gg/nukCuhB47p)
-<a href="https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ"><img src="https://img.shields.io/badge/WeChat-07C160?style=for-the-badge&logo=wechat&logoColor=white" height="20" style="display:inline"></a>
+The v5 Wuji hand grids and mappings are in `examples/tactile/` (`full_hand_tactile*_v5.json`,
+`tactile_pixel_mapping*_v5.json`). They were generated on the left v5 hand and mirrored to the
+right hand; the 2D layout used for mapping (`examples/tactile/tactile_layout.py`) is tuned for the
+left hand.
 
-[![README in English](https://img.shields.io/badge/English-d9d9d9)](./README.md)
-[![README en Français](https://img.shields.io/badge/Francais-d9d9d9)](./README_FR.md)
-[![한국어 README](https://img.shields.io/badge/한국어-d9d9d9)](./README_KR.md)
-[![简体中文版自述文件](https://img.shields.io/badge/简体中文-d9d9d9)](./README_CN.md)
-[![日本語版 README](https://img.shields.io/badge/日本語-d9d9d9)](./README_JA.md)
+## Tactile point pipeline
 
-# Genesis
+Run from the repository root. Scripts default to the right v5 hand in
+`genesis/assets/urdf/wujihand_v5/`; pass `--urdf` for another hand.
 
-## 🔥 News
-- [2025-08-05] Released v0.3.0 🎊 🎉
-- [2025-07-02] The development of Genesis is now officially supported by [Genesis AI](https://genesis-ai.company/).
-- [2025-01-09] We released a [detailed performance benchmarking and comparison report](https://github.com/zhouxian/genesis-speed-benchmark) on Genesis, together with all the test scripts.
-- [2025-01-08] Released v0.2.1 🎊 🎉
-- [2025-01-08] Created [Discord](https://discord.gg/nukCuhB47p) and [Wechat](https://drive.google.com/uc?export=view&id=1ZS9nnbQ-t1IwkzJlENBYqYIIOOZhXuBZ) group.
-- [2024-12-25] Added a [docker](#docker) including support for the ray-tracing renderer
-- [2024-12-24] Added guidelines for [contributing to Genesis](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md)
-
-## Table of Contents
-
-1. [What is Genesis?](#what-is-genesis)
-2. [Key Features](#key-features)
-3. [Quick Installation](#quick-installation)
-4. [Docker](#docker)
-5. [Documentation](#documentation)
-6. [Contributing to Genesis](#contributing-to-genesis)
-7. [Support](#support)
-8. [License and Acknowledgments](#license-and-acknowledgments)
-9. [Associated Papers](#associated-papers)
-10. [Citation](#citation)
-
-## What is Genesis?
-
-Genesis is a physics platform designed for general-purpose *Robotics/Embodied AI/Physical AI* applications. It is simultaneously multiple things:
-
-1. A **universal physics engine** re-built from the ground up, capable of simulating a wide range of materials and physical phenomena.
-2. A **lightweight**, **ultra-fast**, **pythonic**, and **user-friendly** robotics simulation platform.
-3. A powerful and fast **photo-realistic rendering system**.
-4. A **generative data engine** that transforms user-prompted natural language description into various modalities of data.
-
-Powered by a universal physics engine re-designed and re-built from the ground up, Genesis integrates various physics solvers and their coupling into a unified framework. This core physics engine is further enhanced by a generative agent framework that operates at an upper level, aiming towards fully automated data generation for robotics and beyond.
-
-**Note**: Currently, we are open-sourcing the _underlying physics engine_ and the _simulation platform_. Our _generative framework_ is a modular system that incorporates many different generative modules, each handling a certain range of data modalities, routed by a high level agent. Some of the modules integrated existing papers and some are still under submission. Access to our generative feature will be gradually rolled out in the near future. If you are interested, feel free to explore more in the [paper list](#associated-papers) below.
-
-Genesis aims to:
-
-- **Lower the barrier** to using physics simulations, making robotics research accessible to everyone. See our [mission statement](https://genesis-world.readthedocs.io/en/latest/user_guide/overview/mission.html).
-- **Unify diverse physics solvers** into a single framework to recreate the physical world with the highest fidelity.
-- **Automate data generation**, reducing human effort and letting the data flywheel spin on its own.
-
-Project Page: <https://genesis-embodied-ai.github.io/>
-
-## Key Features
-
-- **Speed**: Over 43 million FPS when simulating a Franka robotic arm with a single RTX 4090 (430,000 times faster than real-time).
-- **Cross-platform**: Runs on Linux, macOS, Windows, and supports multiple compute backends (CPU, Nvidia/AMD GPUs, Apple Metal).
-- **Integration of diverse physics solvers**: Rigid body, MPM, SPH, FEM, PBD, Stable Fluid.
-- **Wide range of material models**: Simulation and coupling of rigid bodies, liquids, gases, deformable objects, thin-shell objects, and granular materials.
-- **Compatibility with various robots**: Robotic arms, legged robots, drones, *soft robots*, and support for loading `MJCF (.xml)`, `URDF`, `.obj`, `.glb`, `.ply`, `.stl`, and more.
-- **Photo-realistic rendering**: Native ray-tracing-based rendering.
-- **Differentiability**: Genesis is designed to be fully differentiable. Currently, our MPM solver and Tool Solver support differentiability, with other solvers planned for future versions (starting with rigid & articulated body solver).
-- **User-friendliness**: Designed for simplicity, with intuitive installation and APIs.
-
-## Quick Installation
-
-### Using pip
-
-Install **PyTorch** first following the [official instructions](https://pytorch.org/get-started/locally/).
-
-Then, install Genesis via PyPI:
-```bash
-pip install genesis-world  # Requires Python>=3.10,<3.14;
-```
-
-For the latest version to date, make sure that `pip` is up-to-date via `pip install --upgrade pip`, then run command:
-```bash
-pip install git+https://github.com/Genesis-Embodied-AI/Genesis.git
-```
-Note that the package must still be updated manually to sync with main branch.
-
-Users seeking to contribute are encouraged to install Genesis in editable mode. First, make sure that `genesis-world` has been uninstalled, then clone the repository and install locally:
-```bash
-git clone https://github.com/Genesis-Embodied-AI/Genesis.git
-cd Genesis
-pip install -e ".[dev]"
-```
-It is recommended to systematically execute `pip install -e ".[dev]"` after moving HEAD to make sure that all dependencies and entrypoints are up-to-date.
-
-### Using uv
-
-[uv](https://docs.astral.sh/uv/) is a fast Python package and project manager.
-
-**Install uv:**
-```bash
-# On macOS and Linux
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# On Windows
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
-
-**Quick start with uv:**
-```bash
-git clone https://github.com/Genesis-Embodied-AI/Genesis.git
-cd Genesis
-uv sync
-```
-
-Then install PyTorch for your platform:
+**1. Generate a tactile array for each link.** Links differ in shape and size, so each link, or
+each group of links that shares settings (e.g. the same segment of the four fingers), gets its own
+run and its own output file. A run samples the link's palm-facing surface densely and keeps a
+regular grid of points on it, in the link's local frame. The main settings are the grid spacing
+(`--grid-spacing-h/-v`), which surfaces count as palm-facing (`--palm-threshold`,
+`--palm-facing-angle`), and the height range along the link (`--z-min/--z-max`). Repeat until every
+sensing link is covered:
 
 ```bash
-# NVIDIA GPU (CUDA 12.6 as an example)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu126
-
-# CPU only (Linux/Windows)
-uv pip install torch --index-url https://download.pytorch.org/whl/cpu
-
-# Apple Silicon (Metal/MPS)
-uv pip install torch
+python examples/tactile/generate_grid_tactile_points.py \
+    --links finger2_link3,finger3_link3,finger4_link3,finger5_link3 \
+    --grid-spacing-h 0.003 --grid-spacing-v 0.0038 --palm-threshold -0.3 \
+    --z-min 0.003 --z-max 0.027 --dense-samples 200000 --output finger_link3.json
 ```
 
-Run an example:
-```bash
-uv run examples/rigid/single_franka.py
-```
-
-## Docker
-
-If you want to use Genesis from Docker, you can first build the Docker image as:
+**2. Remove stray points (optional).** Clean up points that landed in the wrong place on one link of
+a per-link file (lasso-select, `d` to delete, `s` to save):
 
 ```bash
-docker build -t genesis -f docker/Dockerfile docker
+python examples/tactile/edit_tactile_points.py palm.json --link palm_link
 ```
 
-Then you can run the examples inside the docker image (mounted to `/workspace/examples`):
+**3. Merge into a single config.** Combine the per-link files into one tactile grid covering the
+whole hand. This is the file the sensor and the mapping tools read. The order of the input files
+sets the order of links, and therefore of points, in the sensor readout:
 
 ```bash
-xhost +local:root # Allow the container to access the display
-
-docker run --gpus all --rm -it \
--e DISPLAY=$DISPLAY \
--e LOCAL_USER_ID="$(id -u)" \
--v /dev/dri:/dev/dri \
--v /tmp/.X11-unix/:/tmp/.X11-unix \
--v $(pwd):/workspace \
---name genesis genesis:latest
+python examples/tactile/merge_tactile_grids.py finger*.json palm.json --output full_hand_tactile.json
 ```
 
-### AMD users
-AMD users can use Genesis using the `docker/Dockerfile.amdgpu` file, which is built by running:
+**4. Visualize** the points on the hand:
+
+```bash
+python examples/tactile/visualize_tactile_sensor.py --tactile-grid full_hand_tactile.json
 ```
-docker build -t genesis-amd -f docker/Dockerfile.amdgpu docker
+
+Steps 5 and 6 map the simulated points onto the real tactile glove's readout. The glove reports a
+24x32 tactile map, while the simulation reports one force per tactile point (643 for the v5 grid).
+A mapping from points to pixels lets the simulated forces be rendered as the same 24x32 map
+(`genesis.vis.TactileVisualizer`), so simulated and real tactile readings can be compared directly,
+for example in a reward.
+
+**5. Create the raw mapping.** Pair each region of the hand with the block of pixels that region
+covers on the glove's map. The tool shows all points flattened into 2D next to the 24x32 grid;
+select a region's points (e.g. one finger segment) and its pixels, then press `m` to record that
+pair. Repeat for every region and press `s` to save:
+
+```bash
+python examples/tactile/create_tactile_mapping.py \
+    --tactile-grid full_hand_tactile.json --output tactile_to_image_mapping.json
 ```
 
-and can then be used by running:
+**6. Compute the final point-to-pixel mapping.** Within each recorded pair, every pixel takes its
+nearest tactile point in the 2D layout, and any point left without a pixel goes to its nearest pixel.
+A pixel's value is then the average force of its points. The output file is what
+`TactileVisualizer` loads:
 
-```xhost +local:docker \
-docker run -it --network=host \
- --device=/dev/kfd \
- --device=/dev/dri \
- --group-add=video \
- --ipc=host \
- --cap-add=SYS_PTRACE \
- --security-opt seccomp=unconfined \
- --shm-size 8G \
- -v $PWD:/workspace \
- -e DISPLAY=$DISPLAY \
- genesis-amd
- ```
+```bash
+python examples/tactile/compute_tactile_mapping.py \
+    --raw-mapping tactile_to_image_mapping.json --tactile-grid full_hand_tactile.json \
+    --output tactile_pixel_mapping.json
+```
 
-The examples will be accessible from `/workspace/examples`. Note: AMD users should use the ROCm (HIP) backend. This means you will need to call `gs.init(backend=gs.amdgpu)` to initialise Genesis.
+**7. Visualize the mapping.** Shows the points in 3D on the hand next to the 24x32 map: click a
+point to highlight its pixel, or a pixel to highlight its points (`c` or right-click clears). Pass
+the URDF the grid was generated for:
 
-## Documentation
+```bash
+python examples/tactile/visualize_tactile_mapping_3d.py \
+    --tactile-grid full_hand_tactile.json --mapping tactile_pixel_mapping.json \
+    --urdf genesis/assets/urdf/wujihand_v5/wujihand_right_v5.urdf
+```
 
-Comprehensive documentation is available in [English](https://genesis-world.readthedocs.io/en/latest/user_guide/index.html), [Chinese](https://genesis-world.readthedocs.io/zh-cn/latest/user_guide/index.html), and [Japanese](https://genesis-world.readthedocs.io/ja/latest/user_guide/index.html). This includes detailed installation steps, tutorials, and API references.
+## License
 
-## Contributing to Genesis
-
-The Genesis project is an open and collaborative effort. We welcome all forms of contributions from the community, including:
-
-- **Pull requests** for new features or bug fixes.
-- **Bug reports** through GitHub Issues.
-- **Suggestions** to improve Genesis's usability.
-
-Refer to our [contribution guide](https://github.com/Genesis-Embodied-AI/Genesis/blob/main/.github/contributing/PULL_REQUESTS.md) for more details.
-
-## Support
-
-- Report bugs or request features via GitHub [Issues](https://github.com/Genesis-Embodied-AI/Genesis/issues).
-- Join discussions or ask questions on GitHub [Discussions](https://github.com/Genesis-Embodied-AI/Genesis/discussions).
-
-## License and Acknowledgments
-
-The Genesis source code is licensed under Apache 2.0.
-
-Genesis's development has been made possible thanks to these open-source projects:
-
-- [Taichi](https://github.com/taichi-dev/taichi): High-performance cross-platform compute backend. Kudos to the Taichi team for their technical support!
-- [FluidLab](https://github.com/zhouxian/FluidLab): Reference MPM solver implementation.
-- [SPH_Taichi](https://github.com/erizmr/SPH_Taichi): Reference SPH solver implementation.
-- [Ten Minute Physics](https://matthias-research.github.io/pages/tenMinutePhysics/index.html) and [PBF3D](https://github.com/WASD4959/PBF3D): Reference PBD solver implementations.
-- [MuJoCo](https://github.com/google-deepmind/mujoco): Reference for rigid body dynamics.
-- [libccd](https://github.com/danfis/libccd): Reference for collision detection.
-- [PyRender](https://github.com/mmatl/pyrender): Rasterization-based renderer.
-- [LuisaCompute](https://github.com/LuisaGroup/LuisaCompute) and [LuisaRender](https://github.com/LuisaGroup/LuisaRender): Ray-tracing DSL.
-- [Madrona](https://github.com/shacklettbp/madrona) and [Madrona-mjx](https://github.com/shacklettbp/madrona_mjx): Batch renderer backend
-
-## Associated Papers
-
-Genesis is a large scale effort that integrates state-of-the-art technologies of various existing and on-going research work into a single system. Here we include a non-exhaustive list of all the papers that contributed to the Genesis project in one way or another:
-
-- Xian, Zhou, et al. "Fluidlab: A differentiable environment for benchmarking complex fluid manipulation." arXiv preprint arXiv:2303.02346 (2023).
-- Xu, Zhenjia, et al. "Roboninja: Learning an adaptive cutting policy for multi-material objects." arXiv preprint arXiv:2302.11553 (2023).
-- Wang, Yufei, et al. "Robogen: Towards unleashing infinite data for automated robot learning via generative simulation." arXiv preprint arXiv:2311.01455 (2023).
-- Wang, Tsun-Hsuan, et al. "Softzoo: A soft robot co-design benchmark for locomotion in diverse environments." arXiv preprint arXiv:2303.09555 (2023).
-- Wang, Tsun-Hsuan Johnson, et al. "Diffusebot: Breeding soft robots with physics-augmented generative diffusion models." Advances in Neural Information Processing Systems 36 (2023): 44398-44423.
-- Katara, Pushkal, Zhou Xian, and Katerina Fragkiadaki. "Gen2sim: Scaling up robot learning in simulation with generative models." 2024 IEEE International Conference on Robotics and Automation (ICRA). IEEE, 2024.
-- Si, Zilin, et al. "DiffTactile: A Physics-based Differentiable Tactile Simulator for Contact-rich Robotic Manipulation." arXiv preprint arXiv:2403.08716 (2024).
-- Wang, Yian, et al. "Thin-Shell Object Manipulations With Differentiable Physics Simulations." arXiv preprint arXiv:2404.00451 (2024).
-- Lin, Chunru, et al. "UBSoft: A Simulation Platform for Robotic Skill Learning in Unbounded Soft Environments." arXiv preprint arXiv:2411.12711 (2024).
-- Zhou, Wenyang, et al. "EMDM: Efficient motion diffusion model for fast and high-quality motion generation." European Conference on Computer Vision. Springer, Cham, 2025.
-- Qiao, Yi-Ling, Junbang Liang, Vladlen Koltun, and Ming C. Lin. "Scalable differentiable physics for learning and control." International Conference on Machine Learning. PMLR, 2020.
-- Qiao, Yi-Ling, Junbang Liang, Vladlen Koltun, and Ming C. Lin. "Efficient differentiable simulation of articulated bodies." In International Conference on Machine Learning, PMLR, 2021.
-- Qiao, Yi-Ling, Junbang Liang, Vladlen Koltun, and Ming Lin. "Differentiable simulation of soft multi-body systems." Advances in Neural Information Processing Systems 34 (2021).
-- Wan, Weilin, et al. "Tlcontrol: Trajectory and language control for human motion synthesis." arXiv preprint arXiv:2311.17135 (2023).
-- Wang, Yian, et al. "Architect: Generating Vivid and Interactive 3D Scenes with Hierarchical 2D Inpainting." arXiv preprint arXiv:2411.09823 (2024).
-- Zheng, Shaokun, et al. "LuisaRender: A high-performance rendering framework with layered and unified interfaces on stream architectures." ACM Transactions on Graphics (TOG) 41.6 (2022): 1-19.
-- Fan, Yingruo, et al. "Faceformer: Speech-driven 3d facial animation with transformers." Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. 2022.
-- Wu, Sichun, Kazi Injamamul Haque, and Zerrin Yumak. "ProbTalk3D: Non-Deterministic Emotion Controllable Speech-Driven 3D Facial Animation Synthesis Using VQ-VAE." Proceedings of the 17th ACM SIGGRAPH Conference on Motion, Interaction, and Games. 2024.
-- Dou, Zhiyang, et al. "C· ase: Learning conditional adversarial skill embeddings for physics-based characters." SIGGRAPH Asia 2023 Conference Papers. 2023.
-
-... and many more on-going work.
-
-## Citation
-
-If you use Genesis in your research, please consider citing:
-
-```bibtex
-@misc{Genesis,
-  author = {Genesis Authors},
-  title = {Genesis: A Generative and Universal Physics Engine for Robotics and Beyond},
-  month = {December},
-  year = {2024},
-  url = {https://github.com/Genesis-Embodied-AI/Genesis}
-}
+Apache 2.0, as upstream Genesis. See [LICENSE](LICENSE).

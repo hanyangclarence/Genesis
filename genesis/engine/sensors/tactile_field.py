@@ -551,7 +551,8 @@ class TactileFieldSensor(Sensor[TactileFieldSensorMetadata]):
         Query Genesis's precomputed SDF using optimized GPU trilinear interpolation.
 
         Uses torch.nn.functional.grid_sample for 1.5-2x faster interpolation.
-        Benchmarking showed this is faster than Taichi due to no CPU/GPU transfer overhead.
+        Benchmarking showed this is faster than a Taichi (now Quadrants) kernel query,
+        since it avoids CPU/GPU transfers.
 
         Args:
             geom: RigidGeom object with precomputed SDF

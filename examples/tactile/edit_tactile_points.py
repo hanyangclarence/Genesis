@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Interactively visualize and remove tactile sensor points from a JSON file.
+"""Interactively view and remove tactile points on one link of a per-link file from
+generate_grid_tactile_points.py (run before merging; merged grids are not supported).
+The link defaults to the first one in the file.
 
 Usage:
     python examples/tactile/edit_tactile_points.py palm.json

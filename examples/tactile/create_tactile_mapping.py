@@ -2,10 +2,13 @@
 Interactive Tool for Creating Tactile Point to Image Mapping
 
 This tool allows you to:
-1. View all tactile points flattened to a 2D map
+1. View all tactile points flattened to a 2D map (the layout in tactile_layout.py)
 2. View a 24x32 pixel grid (tactile image)
-3. Select regions on both maps by clicking points
+3. Select regions on both maps by clicking or dragging
 4. Create mappings between selected tactile points and pixels
+
+It saves the raw mapping: groups of tactile points and the pixels each group should fill.
+compute_tactile_mapping.py turns it into the final point-to-pixel mapping.
 
 Usage:
     python examples/tactile/create_tactile_mapping.py \

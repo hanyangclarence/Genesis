@@ -7,7 +7,7 @@ per-link offset, so the whole hand lies flat in one 2D view. The mapping tool sh
 this layout, and the assignment of pixels to tactile points is computed in it.
 
 The per-link settings are tuned for the left v5 hand, which the tactile grids are
-generated on (see README.md).
+generated on (see the repository README).
 """
 
 import numpy as np
