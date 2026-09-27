@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from pydantic import Field, conlist
@@ -401,18 +401,11 @@ class DepthCamera(Raycaster):
     pattern: DepthCameraPattern
 
 
-# ==================== TactileField Sensor Options ====================
-# Note: The full implementation is in genesis/engine/sensors/tactile_field.py
-# This is an alias for convenience so users can use gs.sensors.TactileField(...)
-
-from typing import Any, Optional
-
-Tuple2FType = tuple[float, float]
-
-
 class TactileField(SensorOptions):
     """
     Sensor that returns dense tactile force field on a surface using SDF-based penetration.
+
+    The full implementation is in genesis/engine/sensors/tactile_field.py.
 
     Parameters
     ----------
@@ -420,50 +413,32 @@ class TactileField(SensorOptions):
         Entity index of the rigid entity with the tactile sensor
     link_idx_local : int
         Local link index within the entity (default: 0)
-    num_rows : int
-        Number of tactile points in the first dimension (default: 10)
-    num_cols : int
-        Number of tactile points in the second dimension (default: 10)
-    elastomer_thickness : float
-        Thickness of the elastomer layer in meters (default: 0.005)
-    surface_size : tuple[float, float]
-        Width and height of the tactile surface (default: (0.08, 0.08))
-    tactile_points_local : np.ndarray | None
-        Custom tactile point positions in local frame (N, 3). If provided, overrides num_rows/num_cols/surface_size.
+    tactile_points_local : array-like, shape (N, 3)
+        Tactile point positions in the sensor link frame.
     indenter_entity_idx : int | list[int]
         Entity index of the indenter object(s). Can be a single int or a list for multiple indenters.
     indenter_link_idx_local : int | list[int]
         Local link index of the indenter(s). Must match length of indenter_entity_idx if both are lists.
     kn : float
         Normal stiffness coefficient (default: 1000.0)
-    kt : float
-        Tangential stiffness coefficient (default: 100.0)
-    mu : float
-        Friction coefficient (default: 0.5)
-    damping : float
-        Contact damping coefficient (default: 0.003)
     """
 
     # Sensor attachment
     entity_idx: int
     link_idx_local: int = 0
 
-    # Tactile grid configuration
-    num_rows: int = 10
-    num_cols: int = 10
-    elastomer_thickness: float = 0.005
-    surface_size: Tuple2FType = (0.08, 0.08)
-    tactile_points_local: Optional[Any] = None  # np.ndarray of shape (N, 3)
+    tactile_points_local: Any  # array-like of shape (N, 3)
 
     # Indenter configuration (supports single or multiple indenters)
     indenter_entity_idx: int | list[int] = -1
     indenter_link_idx_local: int | list[int] = 0
 
-    # Force parameters
     kn: float = 1000.0
-    kt: float = 100.0
-    mu: float = 0.5
-    damping: float = 0.003
+
+    def model_post_init(self, _):
+        shape = np.shape(self.tactile_points_local)
+        if len(shape) != 2 or shape[0] == 0 or shape[1] != 3:
+            gs.raise_exception(f"tactile_points_local must have shape (N, 3) with N > 0, got: {shape}")
 
     def validate(self, scene: "Scene"):
         """Validate sensor options."""
@@ -487,7 +462,7 @@ class TactileField(SensorOptions):
         link_indices = self.indenter_link_idx_local if isinstance(self.indenter_link_idx_local, list) else [self.indenter_link_idx_local]
 
         if len(ent_indices) != len(link_indices):
-            gs.raise_exception(f"indenter_entity_idx and indenter_link_idx_local must have same length")
+            gs.raise_exception("indenter_entity_idx and indenter_link_idx_local must have same length")
 
         # Validate each indenter
         for i, (ent_idx, link_idx) in enumerate(zip(ent_indices, link_indices)):
@@ -498,4 +473,3 @@ class TactileField(SensorOptions):
             indenter_entity = scene.entities[ent_idx]
             if not isinstance(indenter_entity, RigidEntity):
                 gs.raise_exception(f"Indenter entity at index {ent_idx} is not a RigidEntity")
-

@@ -1,20 +1,20 @@
 """
-Full hand tactile sensing demo using TactileFieldSensor for Genesis v0.3.10.
+Full hand tactile sensing demo using TactileFieldSensor.
 
-This script demonstrates tactile sensors on multiple links of the Wuji hand,
-using precomputed tactile point grids from a JSON file.
+This script demonstrates tactile sensors on multiple links of the Wuji hand (v5 model),
+using the precomputed v5 tactile point grid from a JSON file.
 
 Visualizes tactile forces as a 24x32 image using the TactileVisualizer.
 
 Usage:
     # With tactile viewer
-    python tactile_field_hand.py --visualize
+    python examples/tactile/tactile_field_hand.py --visualize
 
     # Without tactile viewer
-    python tactile_field_hand.py --no-visualize
+    python examples/tactile/tactile_field_hand.py --no-visualize
 
     # Specific links only
-    python tactile_field_hand.py --sensor-links palm_link,finger2_link3
+    python examples/tactile/tactile_field_hand.py --sensor-links palm_link,finger2_link3
 """
 import argparse
 
@@ -28,10 +28,10 @@ from genesis.vis import TactileVisualizer
 def main():
     parser = argparse.ArgumentParser(description="Full Hand Tactile Sensing Demo")
     parser.add_argument("--tactile-grid", type=str,
-                        default="examples/tactile/full_hand_tactile.json",
+                        default="examples/tactile/full_hand_tactile_v5.json",
                         help="Path to tactile grid JSON file")
     parser.add_argument("--pixel-mapping", type=str,
-                        default="examples/tactile/tactile_pixel_mapping.json",
+                        default="examples/tactile/tactile_pixel_mapping_v5.json",
                         help="Path to tactile pixel mapping JSON file")
     parser.add_argument("--sensor-links", type=str, default=None,
                         help="Comma-separated list of link names to add tactile sensors to (default: all links in grid file)")
@@ -69,7 +69,7 @@ def main():
     )
 
     ########################## entities ##########################
-    plane = scene.add_entity(
+    scene.add_entity(
         gs.morphs.Plane(),
     )
     # First object - cylinder
@@ -88,11 +88,11 @@ def main():
     )
     wuji_hand = scene.add_entity(
         gs.morphs.URDF(
-            file="/home/hanyang/code/humanoid/GenesisPlayground/assets/robot/xarm/wujihand_left_v5.urdf",
+            file="genesis/assets/urdf/wujihand_v5/wujihand_right_v5.urdf",
             merge_fixed_links=False,
             fixed=True,
-            pos=(0.07, 0.13, 0.1),
-            euler=(90, 180, 0),
+            pos=(0, 0.1, 0.1),
+            euler=(90, 0, 0),
         ),
         vis_mode="collision"
     )
@@ -118,7 +118,7 @@ def main():
     # IMPORTANT: Keep the same order as in the tactile grid JSON to match global indices
     if args.sensor_links is None:
         sensor_link_names = list(links_data.keys())  # Preserves JSON order
-        print(f"\nNo sensor links specified, using all available links from tactile grid")
+        print("\nNo sensor links specified, using all available links from tactile grid")
     else:
         # Filter but preserve original order from JSON
         requested_links = set(s.strip() for s in args.sensor_links.split(',') if s.strip())
@@ -155,7 +155,7 @@ def main():
 
     for link_name in sensor_link_names:
         link_data = links_data[link_name]
-        link_idx_local = link_data['link_idx_local']
+        link_idx_local = wuji_hand.get_link(link_name).idx_local
         num_points = link_data['num_points']
         local_positions = tactile_points[link_name]
 
@@ -182,7 +182,7 @@ def main():
             'link_idx_local': link_idx_local,
         }
 
-        print(f"  TactileFieldSensor added")
+        print("  TactileFieldSensor added")
 
     ########################## build ##########################
     print(f"\n{'='*70}")

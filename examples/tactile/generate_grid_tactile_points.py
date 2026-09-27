@@ -9,23 +9,24 @@ This script generates a proper grid of tactile points by:
 5. Ensuring uniform coverage on curved and flat surfaces
 
 This produces a clean grid pattern suitable for tactile sensor arrays.
+Points are written in each link's local frame, as {"local": [x, y, z]} entries that
+edit_tactile_points.py and merge_tactile_grids.py read.
 """
 
 import argparse
 import json
 import numpy as np
+import torch
 from pathlib import Path
 
 import genesis as gs
 from genesis.utils import geom as gu
 
 
-def get_palm_facing_triangles(vertices, faces, normals, hand_forward_dir, threshold=-0.3):
-    """Filter triangles to only include those facing the palm.
+def get_palm_facing_triangles(normals, hand_forward_dir, threshold=-0.3):
+    """Return indices of triangles facing the palm.
 
     Args:
-        vertices: Mesh vertices
-        faces: Triangle faces
         normals: Face normals
         hand_forward_dir: Direction vector pointing from palm (toward fingers)
         threshold: Dot product threshold. More negative = stricter filtering.
@@ -33,21 +34,15 @@ def get_palm_facing_triangles(vertices, faces, normals, hand_forward_dir, thresh
                    -0.3: Moderate (recommended, filters out sides/back)
                    -0.1: Loose (may include side surfaces)
     """
-    # Calculate face centers
-    face_centers = vertices[faces].mean(axis=1)
-
     # Palm-facing surfaces have normals pointing opposite to hand_forward_dir
     dot_products = np.sum(normals * hand_forward_dir, axis=1)
-    palm_face_mask = dot_products < threshold
-
-    palm_faces = np.where(palm_face_mask)[0]
-    return palm_faces, palm_face_mask
+    return np.where(dot_products < threshold)[0]
 
 
 def dense_sample_on_faces(vertices, faces, face_indices, num_samples=2000):
     """Densely sample points on selected faces."""
     if len(face_indices) == 0:
-        return np.array([]), np.array([]), np.array([])
+        return np.array([]), np.array([])
 
     # Calculate face properties
     selected_faces = faces[face_indices]
@@ -62,7 +57,6 @@ def dense_sample_on_faces(vertices, faces, face_indices, num_samples=2000):
 
     # Sample faces proportional to area
     probabilities = areas / areas.sum()
-    probabilities = probabilities / probabilities.sum()
 
     sampled_face_idx = np.random.choice(
         len(face_indices), size=num_samples, p=probabilities
@@ -89,16 +83,16 @@ def dense_sample_on_faces(vertices, faces, face_indices, num_samples=2000):
 
     sampled_normals = normals[sampled_face_idx]
 
-    return points, sampled_normals, barycentric
+    return points, sampled_normals
 
 
 def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, grid_spacing_v=None,
-                       num_rows=None, num_cols=None, z_margin=0.001):
+                       num_rows=None, num_cols=None):
     """
     Select grid points from dense samples with adaptive density based on surface geometry.
 
     Algorithm:
-    1. Use world Z-axis as vertical direction
+    1. Use the link-local Z-axis as vertical direction
     2. Compute horizontal direction perpendicular to Z and the average surface normal
     3. Project points to this 2D coordinate system
     4. Divide vertical extent into horizontal slices
@@ -112,12 +106,9 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
         grid_spacing_v: vertical spacing between grid points (in meters), overrides grid_spacing for rows
         num_rows: (optional) if provided, overrides grid_spacing for rows
         num_cols: (optional) if provided, overrides grid_spacing for columns
-        z_margin: margin for row selection (in meters)
 
     Returns:
         grid_points: (M, 3) selected grid points (M varies based on geometry)
-        grid_normals: (M, 3) corresponding normals
-        grid_indices: (M,) indices into original points array
     """
     # Use specific spacing if provided, otherwise fall back to grid_spacing
     if grid_spacing_h is None:
@@ -126,9 +117,9 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
         grid_spacing_v = grid_spacing
 
     if len(points) == 0:
-        return np.array([]), np.array([]), np.array([])
+        return np.array([])
 
-    # Use world Z-axis as vertical direction
+    # Use link-local Z-axis as vertical direction
     z_axis = np.array([0.0, 0.0, 1.0])
 
     # Compute horizontal direction: perpendicular to Z and the average surface normal
@@ -154,14 +145,10 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
     height_dim = 1
     width_dim = 0
 
-    # Find bounds with small margin (10% on each side)
-    margin = 0.0
-    min_2d = points_2d.min(axis=0)
-    max_2d = points_2d.max(axis=0)
-    range_2d = max_2d - min_2d
-
-    grid_min = min_2d + range_2d * margin
-    grid_max = max_2d - range_2d * margin
+    # Find bounds
+    grid_min = points_2d.min(axis=0)
+    grid_max = points_2d.max(axis=0)
+    range_2d = grid_max - grid_min
 
     # Determine number of rows (horizontal slices)
     if num_rows is not None:
@@ -189,8 +176,6 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
         global_col_positions = np.linspace(grid_min[width_dim], grid_max[width_dim], n_global_cols)
 
     grid_points = []
-    grid_normals = []
-    grid_indices = []
     used_indices = set()
 
     # For each row (horizontal slice)
@@ -202,7 +187,6 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
             continue
 
         row_points_2d = points_2d[row_mask]
-        row_point_indices = np.where(row_mask)[0]
 
         # Determine actual width of this row
         row_width_min = row_points_2d[:, width_dim].min()
@@ -240,18 +224,18 @@ def select_grid_points(points, normals, grid_spacing=0.01, grid_spacing_h=None, 
             used_indices.add(selected_idx)
 
             grid_points.append(points[selected_idx])
-            grid_normals.append(normals[selected_idx])
-            grid_indices.append(selected_idx)
 
     if len(grid_points) == 0:
-        return np.array([]), np.array([]), np.array([])
+        return np.array([])
 
-    return np.array(grid_points), np.array(grid_normals), np.array(grid_indices)
+    return np.array(grid_points)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate grid-like tactile points")
-    parser.add_argument("--hand", type=str, default="wuji")
+    parser.add_argument("--urdf", type=str, default="genesis/assets/urdf/wujihand_v5/wujihand_right_v5.urdf",
+                        help="Hand URDF to generate tactile points for")
+    parser.add_argument("--hand", type=str, default="wuji", help="Hand name recorded in the output file")
     parser.add_argument("--output", type=str, default="grid_tactile_points.json")
     parser.add_argument("--grid-spacing", type=float, default=None,
                         help="Target spacing between grid points in meters (e.g., 0.01 for 1cm). "
@@ -326,14 +310,14 @@ def main():
 
     hand = scene.add_entity(
         gs.morphs.URDF(
-            file="/home/hanyang/code/humanoid/GenesisPlayground/assets/robot/xarm/wujihand_left_v5.urdf",
+            file=args.urdf,
             merge_fixed_links=False,
             fixed=True,
             pos=(0, 0, 0.1),
             euler=(90, 0, 0),
         ),
     )
-    print(f"\n✓ Loaded hand: {args.hand}")
+    print(f"\n✓ Loaded hand: {args.urdf}")
 
     scene.build()
 
@@ -371,10 +355,6 @@ def main():
 
         print(f"\n[{link.idx_local:2d}] {link_name}")
 
-        # Get link pose
-        link_pos = link.get_pos().cpu().numpy()
-        link_quat = link.get_quat().cpu().numpy()
-
         # Calculate palm-facing direction from angle (rotation around Z-axis in link frame)
         angle_rad = np.radians(args.palm_facing_angle)
         palm_forward_local = np.array([np.cos(angle_rad), np.sin(angle_rad), 0.0]) 
@@ -396,7 +376,6 @@ def main():
                 continue
 
             # Transform vertices from geom frame to link frame
-            import torch
             geom_pos = np.array(geom.init_pos)
             geom_quat = np.array(geom.init_quat)
 
@@ -417,9 +396,7 @@ def main():
             normals = cross / (2.0 * areas[:, None] + 1e-10)
 
             # Filter palm-facing triangles (now in link frame)
-            palm_faces, _ = get_palm_facing_triangles(
-                vertices_local, faces, normals, palm_forward_local, threshold=args.palm_threshold
-            )
+            palm_faces = get_palm_facing_triangles(normals, palm_forward_local, threshold=args.palm_threshold)
 
             print(f"  Geom {geom_idx}: {len(vertices_local)} verts, {len(faces)} faces")
             print(f"    → Palm-facing: {len(palm_faces)} faces ({100*len(palm_faces)/len(faces):.1f}%)")
@@ -428,7 +405,7 @@ def main():
                 continue
 
             # Step 1: Dense sampling
-            dense_points, dense_normals, _ = dense_sample_on_faces(
+            dense_points, dense_normals = dense_sample_on_faces(
                 vertices_local, faces, palm_faces, num_samples=args.dense_samples
             )
 
@@ -437,7 +414,7 @@ def main():
             # Step 2: Select grid points
             if use_spacing:
                 # Adaptive grid based on spacing
-                grid_points, grid_normals, grid_indices = select_grid_points(
+                grid_points = select_grid_points(
                     dense_points, dense_normals,
                     grid_spacing=args.grid_spacing,
                     grid_spacing_h=effective_spacing_h,
@@ -445,7 +422,7 @@ def main():
                 )
             else:
                 # Fixed grid size
-                grid_points, grid_normals, grid_indices = select_grid_points(
+                grid_points = select_grid_points(
                     dense_points, dense_normals,
                     num_rows=args.grid_rows,
                     num_cols=args.grid_cols
@@ -462,33 +439,12 @@ def main():
                     z_mask &= (grid_points[:, 2] <= args.z_max)
 
                 grid_points = grid_points[z_mask]
-                grid_normals = grid_normals[z_mask]
 
                 print(f"    → After Z-filter [{args.z_min}, {args.z_max}]: {len(grid_points)} points")
 
-            # Store points
-            import torch
-            for i in range(len(grid_points)):
-                point_local_torch = torch.tensor(grid_points[i], dtype=gs.tc_float).reshape(1, 3)
-                link_pos_torch = torch.tensor(link_pos, dtype=gs.tc_float)
-                link_quat_torch = torch.tensor(link_quat, dtype=gs.tc_float)
-
-                point_world_torch = gu.transform_by_trans_quat(point_local_torch, link_pos_torch, link_quat_torch)
-                point_world = point_world_torch[0].cpu().numpy()
-
-                normal_local_torch = torch.tensor(grid_normals[i], dtype=gs.tc_float).reshape(1, 3)
-                normal_world_torch = gu.transform_by_quat(normal_local_torch, link_quat_torch)
-                normal_world = normal_world_torch[0].cpu().numpy()
-
-                link_data['points'].append({
-                    'local': grid_points[i].tolist(),
-                    'world': point_world.tolist(),
-                    'normal_local': grid_normals[i].tolist(),
-                    'normal_world': normal_world.tolist(),
-                    'geom_idx': geom_idx,
-                })
-
-                total_points += 1
+            # Store points (link-local positions)
+            link_data['points'].extend({'local': point} for point in grid_points.tolist())
+            total_points += len(grid_points)
 
         if len(link_data['points']) > 0:
             link_data['num_points'] = len(link_data['points'])
@@ -512,13 +468,13 @@ def main():
             print(f"Grid spacing: H={effective_spacing_h*1000:.1f}mm, V={effective_spacing_v*1000:.1f}mm (adaptive to geometry)")
     else:
         print(f"Grid size: {args.grid_rows}×{args.grid_cols}")
-    print(f"\nPoints per link:")
+    print("\nPoints per link:")
     for link_name, link_data in tactile_data['links'].items():
         print(f"  {link_name:30s}: {link_data['num_points']:3d} points")
 
     print(f"\n✓ Saved to: {output_path.absolute()}")
-    print(f"\nVisualize with:")
-    print(f"  python examples/sensors/visualize_tactile_points.py --input {args.output}")
+    print("\nVisualize with:")
+    print(f"  python examples/tactile/visualize_tactile_sensor.py --tactile-grid {args.output} --urdf {args.urdf}")
 
 
 if __name__ == "__main__":

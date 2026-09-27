@@ -1,9 +1,10 @@
 """
-Compute Optimal Tactile Point to Pixel Mapping
+Compute Tactile Point to Pixel Mapping
 
 This script takes the raw group mappings created by create_tactile_mapping.py
-and computes the optimal assignment between tactile points and pixels using
-the Hungarian algorithm.
+and, within each group, assigns every pixel to its nearest tactile point in the
+normalized 2D layout (tactile_layout.py). Tactile points left without a pixel go
+to their nearest pixel.
 
 Input:
     - Raw mapping JSON from create_tactile_mapping.py
@@ -13,9 +14,9 @@ Output:
     - Clean mapping file with point_to_pixel and pixel_to_points
 
 Usage:
-    python compute_tactile_mapping.py \
+    python examples/tactile/compute_tactile_mapping.py \
         --raw-mapping tactile_to_image_mapping.json \
-        --tactile-grid merged_tactile_grid.json \
+        --tactile-grid full_hand_tactile.json \
         --output tactile_pixel_mapping.json
 """
 
@@ -25,6 +26,8 @@ from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
+
+from tactile_layout import parse_tactile_points
 
 
 # Per-finger base colors for the preview plot (matches visualize_tactile_mapping_3d.py)
@@ -77,92 +80,9 @@ def preview_merged_points(tactile_points, title="Merged tactile points (close to
     plt.show()
 
 
-# YZ offsets for visualization layout (must match create_tactile_mapping.py)
-LINK_YZ_OFFSETS = {
-    "palm_link": (0.0, 0.0),
-    "finger1_link1": (-0.05, 0.02),
-    "finger1_link2": (-0.05, 0.05),
-    "finger1_link3": (-0.05, 0.08),
-    "finger1_link4": (-0.05, 0.11),
-    "finger1_tip_link": (-0.05, 0.14),
-    "finger2_link1": (-0.024, 0.055),
-    "finger2_link2": (-0.024, 0.095),
-    "finger2_link3": (-0.024, 0.135),
-    "finger2_link4": (-0.024, 0.175),
-    "finger2_tip_link": (-0.024, 0.205),
-    "finger3_link1": (-0.003, 0.055),
-    "finger3_link2": (-0.003, 0.095),
-    "finger3_link3": (-0.003, 0.135),
-    "finger3_link4": (-0.003, 0.175),
-    "finger3_tip_link": (-0.003, 0.205),
-    "finger4_link1": (0.015, 0.049),
-    "finger4_link2": (0.015, 0.089),
-    "finger4_link3": (0.015, 0.129),
-    "finger4_link4": (0.015, 0.169),
-    "finger4_tip_link": (0.015, 0.199),
-    "finger5_link1": (0.031, 0.034),
-    "finger5_link2": (0.031, 0.074),
-    "finger5_link3": (0.031, 0.124),
-    "finger5_link4": (0.031, 0.154),
-    "finger5_tip_link": (0.031, 0.174),
-}
-
-
-# Per-link collapse axis — must match create_tactile_mapping.py.
-LINK_COLLAPSE_AXIS = {
-    "finger2_link2": 1,  # drop Y, keep XZ
-    "finger3_link2": 1,
-    "finger4_link2": 1,
-    "finger5_link2": 1,
-    "finger1_link2": 1,
-}
-
-
-def get_collapse_axis(link_name):
-    return LINK_COLLAPSE_AXIS.get(link_name, 0)
-
-
-def parse_tactile_points(tactile_data):
-    """Parse tactile points; 2D layout uses each link's two in-plane local
-    axes (the surface-normal axis, detected as the smallest-spread axis, is
-    dropped) plus the per-link layout offset. Must match the projection used
-    in create_tactile_mapping.py.
+def compute_assignment(tactile_points, tactile_indices, pixels):
     """
-    tactile_points = []
-    links_data = tactile_data.get('links', {})
-    axis_names = ['X', 'Y', 'Z']
-
-    for link_name, link_data in links_data.items():
-        points = link_data.get('points', [])
-        if not points:
-            continue
-
-        collapse_axis = get_collapse_axis(link_name)
-        keep_axes = [a for a in range(3) if a != collapse_axis]
-        offset = LINK_YZ_OFFSETS.get(link_name, (0.0, 0.0))
-        a, b = keep_axes
-
-        print(f"  {link_name}: drop {axis_names[collapse_axis]}, "
-              f"keep {axis_names[a]}{axis_names[b]} ({len(points)} points)")
-
-        for point_idx, point in enumerate(points):
-            local_pos = np.array(point['local'] if isinstance(point, dict) else point)
-            offset_pos_2d = np.array([local_pos[a] + offset[0],
-                                       local_pos[b] + offset[1]])
-            tactile_points.append({
-                'link_name': link_name,
-                'point_idx': point_idx,
-                'local_pos': local_pos,
-                'offset_pos_2d': offset_pos_2d,
-                'collapse_axis': collapse_axis,
-            })
-
-    return tactile_points
-
-
-def compute_optimal_assignment(tactile_points, tactile_indices, pixels, image_shape):
-    """
-    Compute optimal assignment between tactile points and pixels.
+    Compute the assignment between tactile points and pixels for one mapping group.
 
     The assignment ensures that EVERY PIXEL gets at least one tactile point assigned.
     This is important for generating tactile images where every pixel needs a value.
@@ -176,10 +96,10 @@ def compute_optimal_assignment(tactile_points, tactile_indices, pixels, image_sh
         tactile_points: List of all tactile point dicts (with offset_pos_2d)
         tactile_indices: List of global indices for this mapping group
         pixels: List of (row, col) tuples for this mapping group
-        image_shape: (rows, cols) of the tactile image
 
     Returns:
-        point_to_pixel: dict mapping tactile_idx -> list of [row, col] (a point can map to multiple pixels)
+        point_to_pixel: dict mapping tactile_idx -> [row, col], the point's first pixel
+            (a point can cover several pixels; pixel_to_points lists all of them)
         pixel_to_points: dict mapping "row,col" -> [tactile_idx, ...] (each pixel has at least one point)
     """
     tactile_indices = [int(x) for x in tactile_indices]
@@ -221,10 +141,7 @@ def compute_optimal_assignment(tactile_points, tactile_indices, pixels, image_sh
 
     # Compute cost matrix (pairwise Euclidean distances)
     # cost_matrix[i, j] = distance from tactile point i to pixel j
-    cost_matrix = np.zeros((n_tactile, n_pixels))
-    for i in range(n_tactile):
-        for j in range(n_pixels):
-            cost_matrix[i, j] = np.linalg.norm(tactile_2d_norm[i] - pixels_norm[j])
+    cost_matrix = np.linalg.norm(tactile_2d_norm[:, None, :] - pixels_norm[None, :, :], axis=2)
 
     point_to_pixels = {tactile_indices[i]: [] for i in range(n_tactile)}
     pixel_to_points = {}
@@ -280,7 +197,7 @@ def main():
                         default="tactile_to_image_mapping.json",
                         help="Path to raw mapping JSON from create_tactile_mapping.py")
     parser.add_argument("--tactile-grid", type=str,
-                        default="examples/tactile/merged_tactile_grid.json",
+                        default="examples/tactile/full_hand_tactile_left_v5.json",
                         help="Path to original tactile grid JSON")
     parser.add_argument("--output", type=str,
                         default="tactile_pixel_mapping.json",
@@ -316,7 +233,7 @@ def main():
 
     if not args.no_preview:
         print("Previewing merged 2D layout — close the window to continue. "
-              "Edit LINK_YZ_OFFSETS in this file if you want to move clusters around.")
+              "Edit LINK_YZ_OFFSETS in tactile_layout.py if you want to move clusters around.")
         preview_merged_points(tactile_points)
 
     # Get image shape
@@ -342,10 +259,7 @@ def main():
 
         print(f"  Mapping {mapping_idx}: {len(tactile_indices)} tactile points -> {len(pixels)} pixels")
 
-        # Compute optimal assignment
-        point_to_pixel, pixel_to_points = compute_optimal_assignment(
-            tactile_points, tactile_indices, pixels, image_shape
-        )
+        point_to_pixel, pixel_to_points = compute_assignment(tactile_points, tactile_indices, pixels)
 
         # Merge results
         all_point_to_pixel.update(point_to_pixel)
@@ -369,21 +283,14 @@ def main():
         elif tactile_idx not in all_pixel_to_points[pixel_key]:
             errors.append(f"Point {tactile_idx} maps to pixel {pixel}, but pixel_to_points[{pixel_key}] doesn't contain it")
 
-    # Check 2: Every point in pixel_to_points should appear in point_to_pixel with matching pixel
+    # Check 2: Every point in pixel_to_points should appear in point_to_pixel
+    # (a point may cover several pixels, so its point_to_pixel entry is only its first one)
     for pixel_key, point_indices in all_pixel_to_points.items():
-        row, col = map(int, pixel_key.split(','))
         for tactile_idx in point_indices:
             if tactile_idx not in all_point_to_pixel:
                 errors.append(f"Pixel {pixel_key} contains point {tactile_idx}, but point not in point_to_pixel")
-            else:
-                mapped_pixel = all_point_to_pixel[tactile_idx]
-                if mapped_pixel[0] != row or mapped_pixel[1] != col:
-                    errors.append(f"Pixel {pixel_key} contains point {tactile_idx}, but point_to_pixel[{tactile_idx}] = {mapped_pixel}")
 
-    # Check 3: Count consistency
     total_points_in_pixel_to_points = sum(len(pts) for pts in all_pixel_to_points.values())
-    if total_points_in_pixel_to_points != len(all_point_to_pixel):
-        errors.append(f"Count mismatch: pixel_to_points has {total_points_in_pixel_to_points} entries, point_to_pixel has {len(all_point_to_pixel)}")
 
     if errors:
         print(f"FAILED: {len(errors)} errors found:")
@@ -439,7 +346,7 @@ def main():
     print(f"\nOutput saved to: {output_path}")
 
     # Print per-link summary
-    print(f"\nPer-link summary:")
+    print("\nPer-link summary:")
     for link_name in sorted(output['per_link_mapping'].keys()):
         link_mapping = output['per_link_mapping'][link_name]
         print(f"  {link_name}: {len(link_mapping)} points mapped")
