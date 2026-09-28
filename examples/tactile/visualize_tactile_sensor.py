@@ -68,13 +68,15 @@ def main():
         print(f"  {link_name}: {len(points)} tactile points")
     print(f"Total tactile points: {sum(len(points) for points in points_local)}")
 
-    # Hold the hand in a slightly open pose
-    joints_name = [f"finger{i}_joint{j}" for i in range(1, 6) for j in range(1, 5)]
-    motors_dof_idx = [hand.get_joint(name).dofs_idx_local[0] for name in joints_name]
-    hand.set_dofs_kp(np.full(len(motors_dof_idx), 20.0), motors_dof_idx)
-    hand.set_dofs_kv(np.full(len(motors_dof_idx), 1.0), motors_dof_idx)
-    pose = np.zeros(len(motors_dof_idx))
-    pose[:2] = (0.7, -0.16)  # thumb
+    # Hold every joint at zero; for the Wuji hand, open the thumb away from the palm
+    motors_dof_idx = list(range(hand.n_dofs))
+    hand.set_dofs_kp(np.full(hand.n_dofs, 20.0), motors_dof_idx)
+    hand.set_dofs_kv(np.full(hand.n_dofs, 1.0), motors_dof_idx)
+    pose = np.zeros(hand.n_dofs)
+    joint_names = {joint.name for joint in hand.joints}
+    for name, q in {"finger1_joint1": 0.7, "finger1_joint2": -0.16}.items():
+        if name in joint_names:
+            pose[hand.get_joint(name).dofs_idx_local[0]] = q
 
     if cam is not None:
         cam.start_recording()
